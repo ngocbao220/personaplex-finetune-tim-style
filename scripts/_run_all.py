@@ -19,6 +19,7 @@ def main():
               ('check_one_step_parity.py', opts.runs_dir / 'parity/one_step', list(checks)[2:6]),
               ('run_gpu_acceptance.py', opts.runs_dir / 'gpu_acceptance', list(checks)[6:8])]
     failed = False
+    mini_overfit_coverage = 'not_run'
     native_smoke = 'SKIPPED: configure acceptance.inference input_wav, voice_prompt, text_prompt_file'
     try:
         for script, output, names in phases:
@@ -28,6 +29,7 @@ def main():
                 checks[name] = 'FAIL' if result.returncode else 'PASS'
             if script == 'run_gpu_acceptance.py' and (output / 'comparison.json').is_file():
                 evidence = json.loads((output / 'comparison.json').read_text())
+                mini_overfit_coverage = evidence.get('coverage', 'full_selected_conversations')
                 checks['Tim mini-overfit'] = evidence['mini_overfit']
                 checks['Checkpoint reload parity'] = evidence['checkpoint_reload']
             if result.returncode:
@@ -51,11 +53,13 @@ def main():
     finally:
         opts.runs_dir.mkdir(parents=True, exist_ok=True)
         write_json(opts.runs_dir / 'gpu_acceptance_report.json', dict(checks=checks,
+            mini_overfit_coverage=mini_overfit_coverage,
             native_smoke=native_smoke,
             config=str(opts.config.resolve())))
         print('\nCheck                         Status\n----------------------------------------')
         for name,status in checks.items():
             print(f'{name:30} {status}')
+        print(f'Mini-overfit coverage: {mini_overfit_coverage}')
     return failed
 
 

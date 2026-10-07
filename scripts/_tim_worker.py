@@ -43,10 +43,28 @@ def main():
     from finetune.utils import TrainState, set_random_seed
     import torch.distributed as dist
     fixture = json.loads((opts.output / 'fixture.json').read_text())
+    smoke_chunks = fixture['acceptance'].get('smoke_chunks', 0) if not opts.stop_step else 0
     model_root = fixture['acceptance']['model_root']
     args = TrainArgs.load(str(opts.config), drop_extra_fields=False)
     artifacts = opts.output / opts.route
     artifacts.mkdir(exist_ok=True)
+
+    def smoke_evaluation(model):
+        from finetune.data.interleaver import Batch
+        from tim_compat.smoke_subset import load_smoke_samples, replay_samples
+        samples, selection = load_smoke_samples(artifacts)
+        state = TrainState(args.max_steps)
+        was_training = model.training
+        batches = (Batch.collate([sample]) for sample in replay_samples(samples, device='cuda', is_eval=True))
+        try:
+            with torch.random.fork_rng(devices=[0]):
+                evaluate(model, batches, state, args)
+        finally:
+            model.train(was_training)
+        return dict(total=state.this_eval_loss, text=state.this_text_loss, audio=state.this_audio_loss,
+                    scope='fixed_chunk_smoke', num_batches=selection['num_chunks'],
+                    samples_sha256=selection['samples_sha256'],
+                    definition='Tim evaluate: text + audio, independent of training audio_loss_weight/L2')
 
     def evaluation(model, batch):
         state = TrainState(args.max_steps)
@@ -67,11 +85,15 @@ def main():
                 moshi_weights=args.moshi_paths.moshi_path, mimi_weights=args.moshi_paths.mimi_path,
                 tokenizer=args.moshi_paths.tokenizer_path, config_path=args.moshi_paths.config_path)
             model = get_fsdp_model(args, info, resume_lora_path=str(opts.reload / 'lora.safetensors'))
-            batch = torch.load(artifacts / 'last_batch.pt', weights_only=False)
-            batch.codes = batch.codes.cuda()
-            if batch.context_masks is not None:
-                batch.context_masks = batch.context_masks.cuda()
-            write_json(artifacts / 'reload.json', evaluation(model, batch))
+            batch = None
+            if smoke_chunks:
+                write_json(artifacts / 'reload.json', smoke_evaluation(model))
+            else:
+                batch = torch.load(artifacts / 'last_batch.pt', weights_only=False)
+                batch.codes = batch.codes.cuda()
+                if batch.context_masks is not None:
+                    batch.context_masks = batch.context_masks.cuda()
+                write_json(artifacts / 'reload.json', evaluation(model, batch))
             torch.save({n: p.detach().cpu().clone() for n, p in model.named_parameters() if 'lora' in n},
                        artifacts / 'reload_tensors.pt')
             del model, batch
@@ -89,6 +111,7 @@ def main():
             raise RuntimeError(f'STOP: ambiguous Tim observation anchor {text}: {hits}')
         return hits[0]
     before_forward = anchor('output = model(codes=codes, condition_tensors=condition_tensors)')
+    before_loader = anchor('data_loader = build_data_loader(') if smoke_chunks else None
     before_clip = anchor('torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)')
     after_step = anchor('loss_item = loss.item()')
     # Trace executable statement inside final checkpoint branch.
@@ -103,6 +126,14 @@ def main():
             return trace
         f = frame.f_locals
         model = f.get('model')
+        if frame.f_lineno == before_loader and 'smoke_selection' not in captured:
+            from finetune.data import data_loader
+            from tim_compat.smoke_subset import prepare_smoke_samples, smoke_dataset_loader
+            samples, selection = prepare_smoke_samples(data_loader, f['interleaved_tokenizer'],
+                model, args.data, smoke_chunks, artifacts, opts.config)
+            captured['smoke_selection'] = selection
+            # Restore before train_local's outer filter/cache contexts close.
+            f['exit_stack'].enter_context(smoke_dataset_loader(data_loader, samples, f['interleaved_tokenizer']))
         if frame.f_lineno == before_forward and 'initial' not in captured:
             captured['initial'] = tensors(model)
             captured['trainable'] = {n: dict(shape=list(p.shape), dtype=str(p.dtype))
@@ -120,6 +151,8 @@ def main():
             if not opts.stop_step:
                 from finetune.data.data_loader import build_data_loader
                 def fixed_eval():
+                    if smoke_chunks:
+                        return smoke_evaluation(model)
                     state = TrainState(args.max_steps)
                     loader = build_data_loader(f['interleaved_tokenizer'], args.data,
                         args.batch_size, None, 0, 1, True)
@@ -167,8 +200,9 @@ def main():
                 raise StepComplete()
         if frame.f_lineno == save_line and f['state'].step == args.max_steps:
             batch = f['batch']
-            write_json(artifacts / 'pre_save.json', evaluation(model, batch))
-            write_json(artifacts / 'final_eval.json', captured['fixed_eval']())
+            final_eval = captured['fixed_eval']()
+            write_json(artifacts / 'pre_save.json', final_eval if smoke_chunks else evaluation(model, batch))
+            write_json(artifacts / 'final_eval.json', final_eval)
             torch.save(tensors(model), artifacts / 'pre_save_tensors.pt')
             batch = copy.copy(batch)
             batch.codes = batch.codes.cpu()

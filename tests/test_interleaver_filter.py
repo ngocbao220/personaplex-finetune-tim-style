@@ -14,7 +14,7 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
-from tim_compat.sample_filter import FilterPolicy
+from tim_compat.sample_filter import FilterPolicy, chunk_rejection, runtime_filter_policy
 from tim_compat.tokenization import ObservedTokenizer
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,7 +93,7 @@ class InterleaverFilterTest(unittest.TestCase):
         sample = observed(self.wav, 0, self.path)
         row = json.loads(observed.report.getvalue())
         self.assertEqual(row['dense_overflow'][0]['tail_pending'], 0)
-        failure = phase1.chunk_rejection(sample, self.policy)
+        failure = chunk_rejection(sample, self.policy)
         self.assertEqual(failure['reason'], 'text_overflow')
         self.assertEqual(failure['details']['dialogue'][0]['tail_pending'], 1)
 
@@ -104,7 +104,7 @@ class InterleaverFilterTest(unittest.TestCase):
         ):
             with self.subTest(alignments=alignments):
                 sample = self.observe(CPUChunkTokenizer(alignments))(self.wav, 0, self.path)
-                self.assertEqual(phase1.chunk_rejection(sample, self.policy)['reason'], 'text_overflow')
+                self.assertEqual(chunk_rejection(sample, self.policy)['reason'], 'text_overflow')
 
     def test_prompt_and_context_truncation_and_dialogue_displacement(self):
         for tokenizer, expected in (
@@ -114,21 +114,21 @@ class InterleaverFilterTest(unittest.TestCase):
         ):
             with self.subTest(expected=expected):
                 sample = self.observe(tokenizer)(self.wav, 0, self.path)
-                self.assertEqual(phase1.chunk_rejection(sample, self.policy)['reason'], expected)
+                self.assertEqual(chunk_rejection(sample, self.policy)['reason'], expected)
 
     def test_bounds_checked_before_crop_and_allowed_runtime_sentinels(self):
         sample = self.observe(CPUChunkTokenizer([([100], (2, 3), 'agent')]))(self.wav, 0, self.path)
-        self.assertEqual(phase1.chunk_rejection(sample, self.policy)['reason'], 'text_token_out_of_bounds')
+        self.assertEqual(chunk_rejection(sample, self.policy)['reason'], 'text_token_out_of_bounds')
         model = SimpleNamespace(text_card=100, card=2048, zero_token_id=-1,
             text_initial_token_id=100, initial_token_id=2048)
-        policy = phase1.runtime_filter_policy(model, SimpleNamespace(special_tokens={0, 1, 2, -1}))
+        policy = runtime_filter_policy(model, SimpleNamespace(special_tokens={0, 1, 2, -1}))
         codes = torch.zeros(1, 17, 3, dtype=torch.long)
         codes[0, 0] = torch.tensor([-1, 100, 99])
         codes[0, 1] = torch.tensor([-1, 2048, 2047])
         sample = SimpleNamespace(codes=codes, prompt_length=0, context_mask=None)
-        self.assertIsNone(phase1.chunk_rejection(sample, policy))
+        self.assertIsNone(chunk_rejection(sample, policy))
         codes[0, 1, 0] = 2049
-        self.assertEqual(phase1.chunk_rejection(sample, policy)['reason'], 'audio_token_out_of_bounds')
+        self.assertEqual(chunk_rejection(sample, policy)['reason'], 'audio_token_out_of_bounds')
 
     def test_valid_sample_cache_diagnostics_and_reference_fields_unchanged(self):
         tokenizer = CPUChunkTokenizer([([10], (0, 1), 'agent')])
@@ -136,8 +136,8 @@ class InterleaverFilterTest(unittest.TestCase):
         observed = self.observe(tokenizer, cache=True)
         miss = observed(self.wav, 0, self.path)
         hit = observed(self.wav, 0, self.path)
-        self.assertIsNone(phase1.chunk_rejection(miss, self.policy))
-        self.assertIsNone(phase1.chunk_rejection(hit, self.policy))
+        self.assertIsNone(chunk_rejection(miss, self.policy))
+        self.assertIsNone(chunk_rejection(hit, self.policy))
         self.assertEqual(miss.validation, hit.validation)
         self.assertTrue(all(phase1.compare_samples(reference, hit, torch).values()))
         self.assertEqual(tokenizer.calls, 2)
@@ -149,7 +149,7 @@ class InterleaverFilterTest(unittest.TestCase):
         self.path.symlink_to(source)
         observed = self.observe(CPUChunkTokenizer([([10], (0, 1), 'agent')]), cache=True)
         sample = observed(self.wav, 0, self.path)
-        self.assertIsNone(phase1.chunk_rejection(sample, self.policy))
+        self.assertIsNone(chunk_rejection(sample, self.policy))
         self.assertEqual(sample.provenance['path'], str(self.path))
         self.assertFalse(source.with_suffix('.json').exists())
 
@@ -169,15 +169,15 @@ class InterleaverFilterTest(unittest.TestCase):
 
                 tokenizer = InvalidSample([([10], (0, 1), 'agent')])
                 sample = self.observe(tokenizer)(self.wav, 0, self.path)
-                self.assertEqual(phase1.chunk_rejection(sample, self.policy)['reason'], reason)
+                self.assertEqual(chunk_rejection(sample, self.policy)['reason'], reason)
 
     def test_strict_cache_preserves_rejection_and_corruption_still_fails(self):
         tokenizer = CPUChunkTokenizer([([10, 11, 12, 13], (0, 2), 'agent')])
         observed = self.observe(tokenizer, cache=True)
         miss = observed(self.wav, 0, self.path)
         hit = observed(self.wav, 0, self.path)
-        self.assertEqual(phase1.chunk_rejection(miss, self.policy),
-                         phase1.chunk_rejection(hit, self.policy))
+        self.assertEqual(chunk_rejection(miss, self.policy),
+                         chunk_rejection(hit, self.policy))
         self.assertEqual(tokenizer.calls, 1)
         cache = self.root / 'cache' / (miss.provenance['chunk_id'] + '.pt')
         cache.write_bytes(b'corrupt')
@@ -271,7 +271,7 @@ class InterleaverFilterTest(unittest.TestCase):
                     self.path.with_suffix('.json').write_text(json.dumps(data))
                     observed = self.observe(tokenizer)
                     sample = observed(self.wav, 0, self.path)
-                    rejection = phase1.chunk_rejection(sample, self.policy)
+                    rejection = chunk_rejection(sample, self.policy)
                     self.assertEqual(rejection['reason'] if rejection else None, expected)
                     self.assertIs(module.tokenize, original_tokenize)
                     self.assertIs(interleaver.build_token_stream.__func__, original_builder)
@@ -280,7 +280,7 @@ class InterleaverFilterTest(unittest.TestCase):
             self.path.with_suffix('.json').write_text(json.dumps(dict(
                 text_prompt='prompt', alignments=[['hello', [0, .4], 'agent']])))
             sample = self.observe(tokenizer)(self.wav[..., :2], 0, self.path)
-            self.assertIsNone(phase1.chunk_rejection(sample, self.policy))
+            self.assertIsNone(chunk_rejection(sample, self.policy))
 
 
 class SourceAlignmentReportTest(unittest.TestCase):

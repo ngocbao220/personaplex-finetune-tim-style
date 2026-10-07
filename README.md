@@ -81,16 +81,16 @@ CUDA_VISIBLE_DEVICES=0 python "$PROJECT/scripts/check_one_step_parity.py" \
   --config "$PROJECT/config.full.yaml" --sample-index 0 \
   --output-dir /absolute/runs/parity/one_step
 
-# Overfit 10 conversations và reload checkpoint trong process mới.
+# Smoke overfit 8 chunks hợp lệ từ 1 conversation và reload trong process mới.
 CUDA_VISIBLE_DEVICES=0 python "$PROJECT/scripts/run_gpu_acceptance.py" \
   --config "$PROJECT/config.full.yaml" --sample-index 0 \
-  --num-samples 10 --max-steps 100 --checkpoint-step 100 \
-  --output-dir /absolute/runs/gpu_acceptance
+  --num-samples 1 --smoke-chunks 8 --max-steps 100 --checkpoint-step 100 \
+  --output-dir /absolute/runs/gpu_smoke
 ```
 
 Phase interleaver giữ conversation theo `--sample-index`, tìm chunk hợp lệ đầu tiên và ghi chunk bị loại vào `rejections.jsonl`. Token out-of-bound, text overflow sau prompt/crop và prompt/context truncation đều bị chặn; hết chunk hợp lệ thì báo lỗi trong `summary.json`. Timestamp nguồn lỗi làm preflight dừng, không sửa dữ liệu. Chi tiết và hướng dẫn prompt budget nằm trong `scripts/README.md`; cơ chế này không tự bật filter training.
 
-Mini-overfit mặc định yêu cầu teacher-forced eval loss cuối / đầu **< 0.8** (`--required-loss-ratio`). Reload kiểm tra LoRA tensors và loss trước/sau save. Đây là tiêu chí harness, không phải kết quả đạt sẵn. Native evaluator tối đa 40 batches: chọn duration/chunk sao cho fixed set được bao phủ.
+Mini-overfit mặc định yêu cầu teacher-forced eval loss cuối / đầu **< 0.8** (`--required-loss-ratio`). Reload kiểm tra LoRA tensors và loss trước/sau save. Config mẫu bật `acceptance.smoke_chunks: 8`: train lặp trên tối đa 8 chunks hợp lệ cố định, dùng cùng snapshot cho baseline/final/reload. `bridge/smoke_selection.json` ghi coverage và hash; `comparison.json` ghi `coverage: fixed_chunk_smoke`. PASS này không chứng minh toàn bộ 900 giây/conversation hoặc cả 10 conversations. `--smoke-chunks 0` tắt smoke; native full-set evaluator vẫn giới hạn 40 batches. Xem `scripts/README.md` để đọc artifacts.
 
 Chạy toàn bộ bằng orchestrator:
 

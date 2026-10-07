@@ -15,6 +15,7 @@ Dùng [config.full.yaml](../config.full.yaml), có comment giải thích từng 
 | `--num-samples` | Số conversations liên tiếp dùng cho mini-overfit. |
 | `--max-steps` | Số optimizer steps và horizon OneCycle của phase 3. |
 | `--checkpoint-step` | Khoảng cách lưu checkpoint; dùng bằng `--max-steps` để kiểm tra checkpoint cuối. |
+| `--smoke-chunks` | Phase 3: 1–40 chunks hợp lệ cố định cho train/eval/reload; 0=tắt smoke. Ghi đè `acceptance.smoke_chunks` trong YAML. |
 
 Config mẫu dùng loss weights tường minh cho acceptance; nếu so sánh với một run Tim cụ thể, giữ đúng weights của run đó ở cả hai phía. Native evaluation tối đa 40 batches: chọn chunk duration sao cho toàn bộ fixed set nằm trong giới hạn này.
 
@@ -52,17 +53,24 @@ CUDA_VISIBLE_DEVICES=0 python scripts/check_one_step_parity.py \
 
 ## 3. Mini-overfit và save/reload
 
-Train 10 conversations bằng trainer Tim trong 100 steps, rồi kiểm tra loss và LoRA tensors sau khi reload checkpoint trong process mới. Config cần `batch_size: 1`.
+Config cần `batch_size: 1`. Với conversation dài khoảng 900 giây, dùng smoke nhỏ để tránh eval hàng chục/hàng trăm batches:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/run_gpu_acceptance.py \
   --config config.full.yaml \
-  --num-samples 10 \
+  --num-samples 1 \
+  --smoke-chunks 8 \
   --max-steps 100 \
   --sample-index 0 \
   --checkpoint-step 100 \
-  --output-dir runs/gpu_acceptance
+  --output-dir runs/gpu_smoke
 ```
+
+Script lấy tối đa 8 chunks hợp lệ đầu tiên trong conversations đã chọn, giữ chunk duration/prompt/loss như config. Train lặp tuần tự trên **chính tập đó**; baseline, final và reload eval cùng token snapshot, không tokenize lại. Mỗi chunk được kiểm tra bằng filter out-of-bound/overflow như phase 1. Nếu nguồn hết trước 8, dùng số chunk hợp lệ thực tế và ghi rõ; không có chunk hợp lệ thì dừng.
+
+Artifacts trong `bridge/`: `smoke_selection.json` ghi sample IDs, offsets, số chunk đã xét/loại và snapshot SHA-256; `smoke_samples.pt` chứa native Samples CPU; `smoke_rejections.jsonl` ghi lý do loại. `baseline.json`, `final_eval.json`, `pre_save.json`, `reload.json` ghi cùng hash và số batches. `comparison.json` có `coverage: fixed_chunk_smoke`: PASS chỉ áp dụng tập nhỏ đã chọn, **không chứng minh coverage toàn bộ conversations**.
+
+`config.full.yaml` đặt `acceptance.smoke_chunks: 8`; CLI có thể đổi số lượng. `--smoke-chunks 0` giữ đường full-set cũ và vẫn dừng nếu hơn 40 eval batches. One-step parity không bị chuyển sang smoke subset. Không tự giảm số optimizer steps hoặc thay objective; `--max-steps` vẫn điều khiển horizon OneCycle. Smoke này kiểm tra teacher-forced train/save/reload, không thay native generation.
 
 ## 4. Chạy toàn bộ
 

@@ -126,3 +126,38 @@ def sample_filter_loader(data_loader, policy, *, enabled=True, report=None):
         yield
     finally:
         data_loader.build_dataset = original
+
+
+def runtime_filter_policy(model, interleaver):
+    return FilterPolicy(text_cardinality=model.text_card, audio_cardinality=model.card,
+        nonlexical_text_ids=tuple(sorted(interleaver.special_tokens | {model.text_initial_token_id})),
+        zero_padding_id=model.zero_token_id, require_agent_text=False,
+        text_sentinel_ids=(model.text_initial_token_id,), audio_sentinel_ids=(model.initial_token_id,))
+
+
+def chunk_rejection(sample, policy):
+    """Validate native Sample and observed losses; never repair its contents."""
+    reason = rejection_reason(sample, policy)
+    if reason is not None:
+        details = {}
+        if reason in ('text_token_out_of_bounds', 'audio_token_out_of_bounds'):
+            text = reason == 'text_token_out_of_bounds'
+            details = token_bounds_error(sample.codes[:, 0] if text else sample.codes[:, 1:],
+                policy.text_cardinality if text else policy.audio_cardinality, policy.zero_padding_id,
+                policy.text_sentinel_ids if text else policy.audio_sentinel_ids)
+        return dict(reason=reason, details=details)
+    validation = getattr(sample, 'validation', None)
+    if validation is None:
+        return None
+    if validation['bounds']:
+        error = validation['bounds'][0]
+        return dict(reason=error['reason'], details=error)
+    if validation['prompt_frames_dropped']:
+        return dict(reason='prompt_overflow', details=validation)
+    if validation['context_tokens_dropped']:
+        return dict(reason='context_overflow', details=validation)
+    if (validation['dialogue_lexical_dropped'] or
+            any(row['overwritten'] or row['tail_pending'] or row['unstarted']
+                for row in validation['dialogue'])):
+        return dict(reason='text_overflow', details=validation)
+    return None

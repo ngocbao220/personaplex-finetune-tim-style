@@ -4,6 +4,7 @@ acceptance:
   model_root: /absolute/models/personaplex-7b-v1 # Thư mục snapshot PersonaPlex local.
   prepared_manifest: /absolute/prepared/manifest.jsonl # Manifest conversations đã chuẩn bị.
   token_cache: true # Bật cache ở local bridge để kiểm tra parity.
+  smoke_chunks: 8 # Mini-overfit smoke: train/eval/reload cùng tối đa 8 chunks hợp lệ cố định; 0=toàn tập, vẫn có cap eval 40 batches.
   inference:
     free_running_every_steps: 0 # 0=tắt trong train; N>0 chạy baseline trước train và mỗi N optimizer steps.
     input_wav: /absolute/prepared/user_mono.wav # User audio mono (RIGHT channel), không truyền stereo.

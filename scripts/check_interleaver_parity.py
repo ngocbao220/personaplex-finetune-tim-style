@@ -79,46 +79,10 @@ def inspect_sample(sample, interleaver, torch):
     )
 
 
-def runtime_filter_policy(model, interleaver):
-    from tim_compat.sample_filter import FilterPolicy
-    return FilterPolicy(text_cardinality=model.text_card, audio_cardinality=model.card,
-        nonlexical_text_ids=tuple(sorted(interleaver.special_tokens | {model.text_initial_token_id})),
-        zero_padding_id=model.zero_token_id, require_agent_text=False,
-        text_sentinel_ids=(model.text_initial_token_id,), audio_sentinel_ids=(model.initial_token_id,))
-
-
-def chunk_rejection(sample, policy):
-    """Validate native Sample and observed losses; never repair its contents."""
-    from tim_compat.sample_filter import rejection_reason, token_bounds_error
-    reason = rejection_reason(sample, policy)
-    if reason is not None:
-        details = {}
-        if reason in ('text_token_out_of_bounds', 'audio_token_out_of_bounds'):
-            text = reason == 'text_token_out_of_bounds'
-            details = token_bounds_error(sample.codes[:, 0] if text else sample.codes[:, 1:],
-                policy.text_cardinality if text else policy.audio_cardinality, policy.zero_padding_id,
-                policy.text_sentinel_ids if text else policy.audio_sentinel_ids)
-        return dict(reason=reason, details=details)
-    validation = getattr(sample, 'validation', None)
-    if validation is None:
-        return None
-    if validation['bounds']:
-        error = validation['bounds'][0]
-        return dict(reason=error['reason'], details=error)
-    if validation['prompt_frames_dropped']:
-        return dict(reason='prompt_overflow', details=validation)
-    if validation['context_tokens_dropped']:
-        return dict(reason='context_overflow', details=validation)
-    if (validation['dialogue_lexical_dropped'] or
-            any(row['overwritten'] or row['tail_pending'] or row['unstarted']
-                for row in validation['dialogue'])):
-        return dict(reason='text_overflow', details=validation)
-    return None
-
-
 def select_valid_chunk(dataset, observed, path, sample_id, sample_rate, policy, output):
     """Scan only the selected conversation, retaining native order and errors."""
     from _common import write_json
+    from tim_compat.sample_filter import chunk_rejection
     selection = dict(sample_id=sample_id, chunks_examined=0, chunks_rejected=0,
                      candidate_index=None)
     with (output / 'rejections.jsonl').open('a') as report:
@@ -192,6 +156,7 @@ def main(argv=None):
     from finetune.data.interleaver import Interleaver, InterleavedTokenizer
     from tim_compat.local_checkpoint import LocalAssets, LocalCheckpointInfo
     from tim_compat.tokenization import ObservedTokenizer, digest_file
+    from tim_compat.sample_filter import runtime_filter_policy, chunk_rejection
 
     if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
         raise RuntimeError('Expose exactly one CUDA GPU with CUDA_VISIBLE_DEVICES=0; CPU --help only')
