@@ -1,0 +1,78 @@
+# Config mẫu cho GPU acceptance; thay các đường dẫn /absolute/... trước khi chạy.
+# Dùng môi trường Moshi training của Tim; không dùng inference-only loader.
+acceptance:
+  model_root: /absolute/models/personaplex-7b-v1 # Thư mục snapshot PersonaPlex local.
+  prepared_manifest: /absolute/prepared/manifest.jsonl # Manifest conversations đã chuẩn bị.
+  token_cache: true # Bật cache ở local bridge để kiểm tra parity.
+  inference:
+    free_running_every_steps: 0 # 0=tắt trong train; N>0 chạy baseline trước train và mỗi N optimizer steps.
+    input_wav: /absolute/prepared/user_mono.wav # User audio mono (RIGHT channel), không truyền stereo.
+    voice_prompt: /absolute/prepared/agent_voice.wav # Agent voice prompt WAV hoặc embeddings .pt native.
+    text_prompt_file: /absolute/prepared/system_prompt.txt # System prompt UTF-8 cho free-running.
+    original_wav: /absolute/prepared/dialogue_window.wav # Stereo cùng cửa sổ với input_wav; LEFT=agent RIGHT=user.
+    sample_id: acceptance_sample # ID ghi trong manifest kết quả.
+    step: 100 # Nhãn checkpoint step; cập nhật theo checkpoint thực tế.
+    window_start_sec: 0.0 # Offset cửa sổ đã cắt trong conversation gốc.
+    # reference_text_file: /absolute/prepared/agent_reference.txt # Transcript agent trong đúng cửa sổ (tùy chọn).
+
+data:
+  train_data: "" # Harness tự export và gán manifest train của tập mẫu được chọn.
+  eval_data: "" # Harness gán cùng tập cố định để đo overfit.
+  shuffle: false # Giữ nguyên thứ tự samples, không shuffle.
+
+moshi_paths:
+  hf_repo_id: nvidia/personaplex-7b-v1 # Định danh checkpoint; harness chạy offline.
+  moshi_path: /absolute/models/personaplex-7b-v1/model.safetensors # Trọng số PersonaPlex gốc.
+  mimi_path: /absolute/models/personaplex-7b-v1/tokenizer-e351c8d8-checkpoint125.safetensors # Audio codec Mimi.
+  tokenizer_path: /absolute/models/personaplex-7b-v1/tokenizer_spm_32k_3.model # Tokenizer SentencePiece.
+  config_path: /absolute/models/personaplex-7b-v1/config.json # Config local tương thích native Tim loader.
+
+system_prompt:
+  enable: true # Thêm voice/text prompt và mask loss trên vùng prompt.
+  audio_silence_frames: 6 # Số frames im lặng phân cách các phần prompt.
+  prompt_budget_frames: 0 # Native chunk budget mặc định; điều chỉnh theo prompt nếu cần.
+puppeteer:
+  enable: false # Không bật thêm context injection cho acceptance cơ bản.
+
+full_finetuning: false # Không cập nhật toàn bộ base model.
+lora:
+  enable: true # Chỉ fine-tune LoRA.
+  rank: 64 # Rank của các ma trận LoRA.
+  scaling: 2.0 # Hệ số scaling LoRA của Tim.
+  ft_embed: false # Giữ embedding frozen; harness yêu cầu false.
+  skip_depformer: true # Không train LoRA của depformer.
+
+# Trọng số kiểm thử tường minh: non-semantic/semantic = 1/50 = 0.02.
+first_codebook_weight_multiplier: 50.0 # Semantic codebook có trọng số 50 lần các codebook còn lại.
+text_padding_weight: 0.3 # Trọng số text padding so với text tokens thật.
+audio_loss_weight: 1.0 # Total loss = text loss + hệ số này × audio loss (+ L2 nếu bật).
+lora_l2_weight: 0.0 # Tắt regularization L2 cho thử nghiệm overfit.
+neftune_alpha: 0.0 # Tắt noise augmentation để kiểm tra deterministic parity.
+
+duration_sec: 10.0 # Độ dài native chunk; phải đủ chứa prompt và dialogue.
+batch_size: 1 # Bắt buộc cho fixed-set coverage của phase mini-overfit.
+num_microbatches: 1 # Số microbatches tích lũy trước mỗi optimizer step.
+max_steps: 100 # Horizon OneCycle; phase 2 vẫn giữ horizon dù chỉ chạy một step.
+max_norm: 1.0 # Ngưỡng clip gradient norm.
+gradient_checkpointing: true # Giảm GPU memory, đổi lại thêm recomputation.
+param_dtype: bfloat16 # Dtype model parameters.
+optim:
+  lr: 2.0e-5 # Learning rate cực đại của OneCycleLR.
+  weight_decay: 0.1 # Weight decay của AdamW.
+  pct_start: 0.05 # Tỷ lệ horizon dành cho tăng learning rate.
+
+seed: 0 # Seed cho randomness.
+run_dir: /absolute/runs/tim-acceptance # Harness thay bằng output-dir/tim_run.
+overwrite_run_dir: false # Không ghi đè run đã tồn tại.
+log_freq: 1 # Log mỗi optimizer step.
+do_eval: false # Harness tự gọi native evaluate cho fixed-set checks.
+eval_freq: 0 # Không thêm periodic evaluation trong trainer.
+skip_zero_eval: true # Không chạy evaluation mặc định ở step 0.
+do_ckpt: true # Bật lưu checkpoint native.
+ckpt_freq: 100 # Khoảng cách lưu checkpoint; phase 3 dùng --checkpoint-step.
+num_ckpt_keep: null # Không xóa checkpoint cũ trong acceptance run.
+save_adapters: true # Lưu LoRA adapter, không merge vào base weights.
+wandb:
+  project: null # Không gửi logs lên WandB.
+gen_eval:
+  enable: false # Không gọi generation eval/API bên ngoài.

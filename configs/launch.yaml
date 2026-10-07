@@ -1,0 +1,15 @@
+launch:
+  config: ???
+  model_root: ???
+  resume_from: null
+  filter_policy: null
+  filter_report_dir: null
+  train_manifest: null
+  resolved_config: null
+
+hydra:
+  job:
+    chdir: false
+  output_subdir: null
+  run:
+    dir: .

@@ -1,0 +1,1 @@
+"""Additive compatibility infrastructure; no training objective implementation."""
