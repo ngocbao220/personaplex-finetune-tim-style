@@ -43,6 +43,8 @@ cd "$PROJECT"
 
 Trên server khác, đổi `PROJECT` thành **đường dẫn tuyệt đối** tới project. Thay các `/absolute/...` bên dưới bằng assets/data/output thật.
 
+Đường dẫn server mặc định và lệnh export/train synthetic tiếng Việt: [docs/train_synthetic_server.md](docs/train_synthetic_server.md).
+
 ## 3. Quick start: kiểm tra 10 conversations
 
 ### Bước 1 — cấu hình
@@ -127,12 +129,12 @@ python "$PROJECT/prepare_data.py" \
   --output /absolute/exports/tim-prepared
 ```
 
-Đặt `data.train_data` của **native Tim YAML** thành manifest do lệnh in ra; cấu hình eval riêng theo mục đích. Thêm `--config /absolute/configs/train-native.yaml` có thể xuất derived `train.yaml`, nhưng **chỉ đổi train_data**, không tự bật prompts hay đổi eval/shuffle/loss.
+Đặt `data.train_data` của **native Tim YAML** thành manifest do lệnh in ra; cấu hình eval riêng theo mục đích. Thêm `--config /absolute/configs/train-native.yaml` có thể xuất derived `train.yaml`, mặc định chỉ bind train_data. Đặt `data.eval_split_from_train: 0.05` để prepare tách theo conversation và bind thêm `val.jsonl`; ratio `0` tắt split. Xem [hướng dẫn split](docs/train_synthetic_server.md). Không tự đổi prompts/shuffle/loss.
 
-Hai template native training có sẵn (thay mọi đường dẫn `/absolute/...`):
+Hai template native training có sẵn (`train_single_gpu.yaml` đã điền đường dẫn server; `train_original.yaml` còn đường dẫn mẫu):
 
 - `configs/train_original.yaml`: giữ recipe `configs/pharma_demo.yaml`: chunk 80s, batch 8, 6 microbatches, 1024 steps, LoRA rank 64, context injection và eval mỗi 64 steps. Dùng model local, tắt WandB và generation eval gọi API. Cần tài nguyên GPU phù hợp; eval manifest riêng phải nằm trong cap 40 batches của native evaluator.
-- `configs/train_single_gpu.yaml`: giữ loss, LoRA và optimizer của recipe gốc, giảm chunk xuống 10s, batch 1, giữ 6 microbatches; tắt context injection và eval. Đây là train trên toàn manifest, không có giới hạn smoke 8 chunks. Không đảm bảo vừa VRAM mọi GPU. Prompt phải còn đủ chỗ cho dialogue; tăng `duration_sec` nếu bị crop/overflow.
+- `configs/train_single_gpu.yaml`: giữ loss, LoRA và optimizer của recipe gốc, giảm chunk xuống 10s, batch 1, giữ 6 microbatches; tắt context injection; prepare chia 5% conversations cho val, eval mỗi 64 steps (native cap 40 batches). Không có giới hạn smoke 8 chunks. Không đảm bảo vừa VRAM mọi GPU. Prompt phải còn đủ chỗ cho dialogue; tăng `duration_sec` nếu bị crop/overflow.
 
 Cả hai dùng loss gốc (`first_codebook_weight_multiplier: 4`, `text_padding_weight: 0.04`, `lora_l2_weight: 1e-4`), khác objective acceptance. Export train và held-out eval riêng để tránh trùng dữ liệu. `prompt_budget_frames: 0` giữ mặc định gốc; với context injection, đo budget bằng công cụ upstream trước khi đổi. Filter strict của parity/smoke không tự bật trong train thường.
 

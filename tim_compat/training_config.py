@@ -8,8 +8,8 @@ from pathlib import Path
 import yaml
 
 
-def bind_training_manifest(config, manifest, output, *, enabled=True):
-    """Persist an independent YAML with only data.train_data replaced.
+def bind_training_manifest(config, manifest, output, *, enabled=True, eval_manifest=None):
+    """Bind exported train and optionally val manifests in an independent YAML.
 
     Bypass returns the original path without reads/writes. Relative non-data
     paths retain Tim's current-working-directory meaning; we do not rebase them.
@@ -23,6 +23,22 @@ def bind_training_manifest(config, manifest, output, *, enabled=True):
     values = yaml.safe_load(config.read_text())
     if not isinstance(values, dict) or not isinstance(values.get('data'), dict):
         raise ValueError('reference config requires a data mapping')
+    manifests = [manifest]
+    if eval_manifest is not None:
+        eval_manifest = Path(eval_manifest).resolve()
+        manifests.append(eval_manifest)
+    for source in manifests:
+        _validate_tim_manifest(source)
+    values['data']['train_data'] = str(manifest)
+    if eval_manifest is not None:
+        values['data']['eval_data'] = str(eval_manifest)
+    text = yaml.safe_dump(values, sort_keys=False, allow_unicode=True)
+    with output.open('x') as stream:
+        stream.write(text)
+    return output
+
+
+def _validate_tim_manifest(manifest):
     count = 0
     for line in manifest.read_text().splitlines():
         if not line.strip():
@@ -37,11 +53,6 @@ def bind_training_manifest(config, manifest, output, *, enabled=True):
         count += 1
     if count == 0:
         raise ValueError('empty Tim manifest')
-    values['data']['train_data'] = str(manifest)
-    text = yaml.safe_dump(values, sort_keys=False, allow_unicode=True)
-    with output.open('x') as stream:
-        stream.write(text)
-    return output
 
 @contextmanager
 def native_training_config(config, *, vietnamese_text_mode=None):
@@ -50,12 +61,17 @@ def native_training_config(config, *, vietnamese_text_mode=None):
     import tempfile
     config = Path(config)
     values = yaml.safe_load(config.read_text())
+    from .prepared_data import validate_eval_split
+    ratio = validate_eval_split(values.get('data', {}).get('eval_split_from_train', 0))
+    if ratio and not values['data'].get('eval_data', '').strip():
+        raise ValueError('eval_split_from_train requires exported val manifest; run prepare_data.py --config first')
     configured_mode = text_mode_from_config(values)
     mode = vietnamese_text_mode or configured_mode
     text_mode_from_config({'data': {'vietnamese_text_mode': mode}})
     if ('vietnamese_text_mode' in values.get('data', {}) and mode != configured_mode):
         raise ValueError('CLI text mode differs from data.vietnamese_text_mode')
-    if vietnamese_text_mode is None and 'vietnamese_text_mode' not in values.get('data', {}):
+    if (vietnamese_text_mode is None and 'vietnamese_text_mode' not in values.get('data', {})
+            and 'eval_split_from_train' not in values.get('data', {})):
         yield config
         return
     # Match native comma-separated path[:weight] sources, including manifest directories.
@@ -79,6 +95,7 @@ def native_training_config(config, *, vietnamese_text_mode=None):
                         if sidecar.get('vietnamese_text_mode') != mode:
                             raise ValueError(f'text mode metadata missing/mismatched for {row["path"]}')
     values['data'].pop('vietnamese_text_mode', None)
+    values['data'].pop('eval_split_from_train', None)
     with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', encoding='utf-8') as handle:
         yaml.safe_dump(values, handle, sort_keys=False, allow_unicode=True)
         handle.flush()

@@ -1,19 +1,21 @@
-# Native Tim training config; replace /absolute paths before launch.
+# Native Tim training config for Vietnamese synthetic prepared data on the server.
+# Run scripts/train_synthetic_server.sh to export prepared sources before training.
 # Original loss/LoRA/optimizer recipe with smaller chunks and batches.
-# Full train manifest is used: no acceptance smoke subset or 8-chunk cap.
-# Eval disabled to avoid native 40-batch cap; gen_eval/API and WandB disabled.
+# Conversation train/val split during prepare; no acceptance smoke subset or 8-chunk cap.
+# Native validation is capped at 40 batches; gen_eval/API and WandB disabled.
 # 10s must fit your prompts; increase duration if prompt/dialogue is truncated.
 data:
   vietnamese_text_mode: diacritics # diacritics | no_diacritics | telex; local bridge consumes this key.
-  train_data: /absolute/exports/tim-train/train.jsonl
-  eval_data: ''
+  train_data: /home/voice/data/voice/personaplex-exports/synthetic-vi/train.jsonl
+  eval_data: '' # prepare_data.py fills val.jsonl.
+  eval_split_from_train: 0.05 # Conversation fraction for val; 0 disables splitting.
   shuffle: true
 moshi_paths:
   hf_repo_id: nvidia/personaplex-7b-v1
-  moshi_path: /absolute/models/personaplex-7b-v1/model.safetensors
-  mimi_path: /absolute/models/personaplex-7b-v1/tokenizer-e351c8d8-checkpoint125.safetensors
-  tokenizer_path: /absolute/models/personaplex-7b-v1/tokenizer_spm_32k_3.model
-  config_path: /absolute/models/personaplex-7b-v1/config.json
+  moshi_path: /home/voice/data/voice/personaplex-7b-v1/model.safetensors
+  mimi_path: /home/voice/data/voice/personaplex-7b-v1/tokenizer-e351c8d8-checkpoint125.safetensors
+  tokenizer_path: /home/voice/data/voice/personaplex-7b-v1/tokenizer_spm_32k_3.model
+  config_path: /home/voice/data/voice/personaplex-7b-v1/config.json
 system_prompt:
   enable: true
   audio_silence_frames: 6
@@ -44,14 +46,14 @@ optim:
   pct_start: 0.05
 seed: 0
 log_freq: 1
-eval_freq: 0
-do_eval: false
+eval_freq: 64
+do_eval: true
 do_ckpt: true
 ckpt_freq: 64
 num_ckpt_keep: null
 skip_zero_eval: true
 save_adapters: true
-run_dir: runs/train-single-gpu
+run_dir: /home/voice/data/voice/personaplex-runs/synthetic-vi-single-gpu
 overwrite_run_dir: false
 wandb:
   project: null

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from tim_compat.prepared_data import prepare_manifest
+from tim_compat.prepared_data import prepare_manifest, validate_eval_split
 from tim_compat.training_config import bind_training_manifest
 
 
@@ -14,7 +14,7 @@ def main():
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--config", type=Path,
-                        help="Optional reference YAML; emit derived YAML with only train_data changed")
+                        help="Reference YAML; bind exported train/val manifests using data.eval_split_from_train")
     parser.add_argument("--workers", type=int, default=0,
                         help="Spawn validation workers; default uses serial reference bridge")
     parser.add_argument("--cache-dir", type=Path,
@@ -27,13 +27,18 @@ def main():
     mode = args.vietnamese_text_mode or text_mode_from_config(values)
     if args.config and mode != text_mode_from_config(values):
         parser.error('--vietnamese-text-mode must match data.vietnamese_text_mode in --config')
+    ratio = validate_eval_split(values.get('data', {}).get('eval_split_from_train', 0))
+    if ratio and values['data'].get('eval_data', '').strip():
+        parser.error('eval_split_from_train conflicts with explicit data.eval_data')
     result = prepare_manifest(args.manifest, args.output, workers=args.workers,
-                              cache_dir=args.cache_dir, vietnamese_text_mode=mode)
+                              cache_dir=args.cache_dir, vietnamese_text_mode=mode,
+                              eval_split_from_train=ratio, seed=values.get('seed', 0))
     print(f"Vietnamese text mode: {mode}")
     print(f"Set original Tim config data.train_data to: {result}")
     print("Enable system_prompt.enable to use the prepared voice/text conditioning.")
     if args.config is not None:
-        config = bind_training_manifest(args.config, result, args.output / 'train.yaml')
+        config = bind_training_manifest(args.config, result, args.output / 'train.yaml',
+                                       eval_manifest=result.parent / 'val.jsonl' if ratio else None)
         print(f"Derived reference config: {config.resolve()}")
 
 

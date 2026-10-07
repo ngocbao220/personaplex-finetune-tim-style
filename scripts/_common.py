@@ -34,6 +34,10 @@ def read_config(path):
             raise ValueError(f'acceptance.{key} must be absolute')
     from tim_compat.text_normalization import text_mode_from_config
     text_mode_from_config(values)
+    from tim_compat.prepared_data import validate_eval_split
+    ratio = validate_eval_split(values.get('data', {}).pop('eval_split_from_train', 0))
+    if ratio:
+        raise ValueError('acceptance fixed-set overfit requires eval_split_from_train: 0')
     return values, acceptance
 
 

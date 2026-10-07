@@ -1,5 +1,6 @@
 """Class-A format bridge: prepared sources to unchanged Tim WAV/JSON sidecars."""
 
+import hashlib
 import json
 import math
 import re
@@ -36,8 +37,16 @@ def _wav_duration(path, channels):
     return duration
 
 
+def validate_eval_split(value):
+    if (isinstance(value, bool) or not isinstance(value, (int, float)) or
+            not math.isfinite(value) or not 0 <= value < 1):
+        raise ValueError('eval_split_from_train must be a finite ratio in [0, 1)')
+    return value
+
+
 def prepare_manifest(manifest, output=None, *, enabled=True, workers=0, cache_dir=None,
-                     vietnamese_text_mode='diacritics'):
+                     vietnamese_text_mode='diacritics', eval_split_from_train=0,
+                     seed=0):
     """Materialize ordered Tim sidecars, without changing any source or sequence.
 
     Disabled mode returns the exact original manifest path without reading it.
@@ -47,6 +56,9 @@ def prepare_manifest(manifest, output=None, *, enabled=True, workers=0, cache_di
     """
     if not enabled:
         return Path(manifest)
+    ratio = validate_eval_split(eval_split_from_train)
+    if ratio and (isinstance(seed, bool) or not isinstance(seed, int)):
+        raise ValueError('conversation split seed must be an integer')
     from .text_normalization import normalize_vietnamese_text
     normalize_vietnamese_text('', vietnamese_text_mode)
     if isinstance(workers, bool) or not isinstance(workers, int) or workers < 0:
@@ -96,6 +108,18 @@ def prepare_manifest(manifest, output=None, *, enabled=True, workers=0, cache_di
         samples = list(map(_prepare_row, samples))
     if not samples:
         raise ValueError("empty prepared manifest")
+    val_ids = set()
+    if ratio:
+        if len(samples) < 2:
+            raise ValueError('validation split requires at least two conversations')
+        audio_paths = [sample[1].resolve() for sample in samples]
+        if len(set(audio_paths)) != len(audio_paths):
+            raise ValueError('different sample IDs reference the same conversation audio')
+        # Stable membership across manifest reordering and validation workers/cache.
+        ranked = sorted(samples, key=lambda sample: (
+            hashlib.sha256(f'{seed}\0{sample[0]}'.encode()).digest(), sample[0]))
+        count = min(len(samples) - 1, max(1, math.ceil(len(samples) * ratio)))
+        val_ids = {sample[0] for sample in ranked[:count]}
     if cache is not None:
         if _fingerprint(root, manifest) != fingerprint:
             raise RuntimeError("prepared sources changed during export; retry on immutable inputs")
@@ -103,6 +127,7 @@ def prepare_manifest(manifest, output=None, *, enabled=True, workers=0, cache_di
             _publish_cache(cache, fingerprint, samples)
     output.mkdir(parents=True)
     records = []
+    val_records = []
     rejections = []
     for sample_id, audio, voice, duration, sidecar in samples:
         # Cache stores raw prepared text; apply each mode exactly once on export.
@@ -115,13 +140,25 @@ def prepare_manifest(manifest, output=None, *, enabled=True, workers=0, cache_di
         wav_path = output / f"{sample_id}.wav"
         wav_path.symlink_to(audio)
         wav_path.with_suffix(".json").write_text(json.dumps(sidecar, ensure_ascii=False) + "\n")
-        records.append(json.dumps({"path": str(wav_path), "duration": duration,
-                                   "vietnamese_text_mode": vietnamese_text_mode}))
+        target = val_records if sample_id in val_ids else records
+        target.append(json.dumps({"path": str(wav_path), "duration": duration,
+                                  "vietnamese_text_mode": vietnamese_text_mode}))
     (output / 'source_rejections.jsonl').write_text(''.join(
         json.dumps(row, ensure_ascii=False) + '\n' for row in rejections))
     print(f'Source alignment quarantine: {len(rejections)} words; report={output / "source_rejections.jsonl"}')
     result = output / "train.jsonl"
     result.write_text("\n".join(records) + "\n")
+    if ratio:
+        (output / 'val.jsonl').write_text('\n'.join(val_records) + '\n')
+        train_ids = [sample[0] for sample in samples if sample[0] not in val_ids]
+        report = dict(eval_split_from_train=ratio, seed=seed,
+                      unit='conversation', selection='sha256(seed, sample_id)',
+                      prepared_manifest=str(manifest),
+                      manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                      train_sample_ids=train_ids, val_sample_ids=sorted(val_ids),
+                      train_conversations=len(records), val_conversations=len(val_records))
+        (output / 'split.json').write_text(json.dumps(report, indent=2) + '\n')
+        print(f'Conversation split: train={len(records)} val={len(val_records)}; seed={seed}; report={output / "split.json"}')
     print(f"Prepared adapter: {len(samples)} samples; LEFT=agent, RIGHT=user; first={samples[0][0]}")
     return result
 

@@ -4,7 +4,7 @@ Chạy các lệnh từ thư mục `personaplex-finetune-tim-style/`, dùng conf
 
 ## Config và tham số
 
-Dùng [config.full.yaml](../config.full.yaml), có comment giải thích từng tham số. Thay các đường dẫn `/absolute/...` bằng model assets và prepared manifest thật trước khi chạy. File này dành cho acceptance harness, không chạy trực tiếp bằng trainer.
+Dùng [config.full.yaml](../config.full.yaml), có comment giải thích từng tham số. Config mặc định đã điền đường dẫn server OtoSpeech/model/probe; kiểm tra các file này tồn tại trước khi chạy. Full training synthetic dùng [train_synthetic_server.sh](train_synthetic_server.sh), xem [hướng dẫn server](../docs/train_synthetic_server.md). File này dành cho acceptance harness, không chạy trực tiếp bằng trainer.
 
 | Tham số lệnh | Ý nghĩa |
 |---|---|
