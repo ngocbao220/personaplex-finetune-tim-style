@@ -22,6 +22,16 @@ Config mẫu dùng loss weights tường minh cho acceptance; nếu so sánh v�
 
 Kiểm tra token streams, prompt length và masks giữa tokenizer Tim trực tiếp và token cache.
 
+Phase này **tự lọc invalid chunks**, không cần `acceptance.filter_policy`. `--sample-index` vẫn chọn một conversation; script duyệt native chunks theo thứ tự, bỏ chunk lỗi và chạy parity trên chunk hợp lệ đầu tiên. Không chuyển sang conversation khác và không sửa token, prompt hay mask.
+
+- Kiểm tra layout, prompt/mask và text/audio IDs bằng vocabulary cùng sentinel của runtime thực tế, kể cả text/prompt trước crop.
+- Loại `text_overflow` khi token bị overwrite, còn pending/không bắt đầu được trong dialogue budget, hoặc lexical text bị mất sau crop/context insertion. Loại `prompt_overflow` khi prefix bị clamp và `context_overflow` khi context tokens bị cắt.
+- Timestamp không hữu hạn, âm, đảo thứ tự hoặc vượt audio nguồn làm preflight dừng; không tự bỏ word lỗi. Word giao biên chunk bình thường không bị coi là timestamp invalid.
+
+`rejections.jsonl` ghi sample/chunk identity, cửa sổ và lý do ngay khi loại; `observations.jsonl` ghi diagnostics/cache của các chunk đã xét. `summary.json` ghi số chunk đã xét/loại, chunk được chọn và runtime filter policy. Hết chunk hợp lệ thì thoát lỗi với `reason: no_valid_chunk`; lỗi nguồn có `stage: prepared_source`. Runtime/CUDA/cache errors vẫn dừng, không bị skip.
+
+Nếu prompt chiếm nhiều frame, đặt `system_prompt.prompt_budget_frames` theo prompt thực tế (ít nhất bằng prefix dài nhất, nhỏ hơn tổng chunk frames). Budget quá nhỏ có thể khiến text cuối cửa sổ bị crop và mọi chunk đều bị loại. Xem diagnostics để sửa config/data; script không tự thay chunking. Filter này chỉ áp dụng cho phase 1, không tự bật filter training.
+
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/check_interleaver_parity.py \
   --config config.full.yaml \

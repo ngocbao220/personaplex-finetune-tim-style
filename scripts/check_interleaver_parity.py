@@ -13,7 +13,6 @@ This does not prove transcript completeness, loss semantics, or trainer parity.
 import argparse
 from dataclasses import asdict
 import hashlib
-import io
 import json
 from pathlib import Path
 import random
@@ -80,6 +79,96 @@ def inspect_sample(sample, interleaver, torch):
     )
 
 
+def runtime_filter_policy(model, interleaver):
+    from tim_compat.sample_filter import FilterPolicy
+    return FilterPolicy(text_cardinality=model.text_card, audio_cardinality=model.card,
+        nonlexical_text_ids=tuple(sorted(interleaver.special_tokens | {model.text_initial_token_id})),
+        zero_padding_id=model.zero_token_id, require_agent_text=False,
+        text_sentinel_ids=(model.text_initial_token_id,), audio_sentinel_ids=(model.initial_token_id,))
+
+
+def chunk_rejection(sample, policy):
+    """Validate native Sample and observed losses; never repair its contents."""
+    from tim_compat.sample_filter import rejection_reason, token_bounds_error
+    reason = rejection_reason(sample, policy)
+    if reason is not None:
+        details = {}
+        if reason in ('text_token_out_of_bounds', 'audio_token_out_of_bounds'):
+            text = reason == 'text_token_out_of_bounds'
+            details = token_bounds_error(sample.codes[:, 0] if text else sample.codes[:, 1:],
+                policy.text_cardinality if text else policy.audio_cardinality, policy.zero_padding_id,
+                policy.text_sentinel_ids if text else policy.audio_sentinel_ids)
+        return dict(reason=reason, details=details)
+    validation = getattr(sample, 'validation', None)
+    if validation is None:
+        return None
+    if validation['bounds']:
+        error = validation['bounds'][0]
+        return dict(reason=error['reason'], details=error)
+    if validation['prompt_frames_dropped']:
+        return dict(reason='prompt_overflow', details=validation)
+    if validation['context_tokens_dropped']:
+        return dict(reason='context_overflow', details=validation)
+    if (validation['dialogue_lexical_dropped'] or
+            any(row['overwritten'] or row['tail_pending'] or row['unstarted']
+                for row in validation['dialogue'])):
+        return dict(reason='text_overflow', details=validation)
+    return None
+
+
+def select_valid_chunk(dataset, observed, path, sample_id, sample_rate, policy, output):
+    """Scan only the selected conversation, retaining native order and errors."""
+    from _common import write_json
+    selection = dict(sample_id=sample_id, chunks_examined=0, chunks_rejected=0,
+                     candidate_index=None)
+    with (output / 'rejections.jsonl').open('a') as report:
+        try:
+            for index, chunk in enumerate(dataset):
+                selection['chunks_examined'] += 1
+                wav = chunk['data'][..., :chunk['unpadded_len']]
+                start = chunk['start_time_sec']
+                if wav.ndim != 2 or wav.shape[0] != 2:
+                    raise ValueError('LEFT=agent, RIGHT=user stereo required')
+                sample = observed(wav, start, str(path))
+                rejection = chunk_rejection(sample, policy)
+                if rejection is None:
+                    selection['candidate_index'] = index
+                    print(f'Accepted chunk {index}: start={start}s; '
+                          f'rejected={selection["chunks_rejected"]}', flush=True)
+                    return chunk, sample, selection
+                selection['chunks_rejected'] += 1
+                row = dict(sample_id=sample_id, candidate_index=index, chunk_start=start,
+                    chunk_end=start + wav.shape[-1] / sample_rate,
+                    provenance=getattr(sample, 'provenance', None), **rejection)
+                report.write(json.dumps(row, ensure_ascii=False) + '\n')
+                report.flush()
+                print(f'Rejected chunk {index}: start={start}s; reason={row["reason"]}', flush=True)
+        except Exception as error:
+            write_json(output / 'summary.json', dict(pass_=False, reason='runtime_error',
+                error_type=type(error).__name__, error=str(error), filter_policy=asdict(policy), **selection))
+            raise
+    write_json(output / 'summary.json', dict(pass_=False, reason='no_valid_chunk',
+                                           filter_policy=asdict(policy), **selection))
+    raise RuntimeError(f'no valid chunk in selected conversation {sample_id}; see {output / "summary.json"}')
+
+
+def prepare_parity_fixture(config, output, sample_index):
+    """Preserve typed source-validation evidence before CUDA/model initialization."""
+    from _common import prepare_fixture, write_json
+    from tim_compat.prepared_data import PreparedAlignmentError
+    try:
+        return prepare_fixture(config, output, sample_index=sample_index)
+    except PreparedAlignmentError as error:
+        output = Path(output).resolve()
+        row = dict(sample_id=error.sample_id, candidate_index=None, stage='prepared_source',
+                   reason=error.reason, details=error.details)
+        with (output / 'rejections.jsonl').open('x') as report:
+            report.write(json.dumps(row, ensure_ascii=False) + '\n')
+        write_json(output / 'summary.json', dict(pass_=False, chunks_examined=0,
+            chunks_rejected=0, error=str(error), **row))
+        raise
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--config', type=Path, required=True)
@@ -89,10 +178,10 @@ def main(argv=None):
     if opts.sample_index < 0:
         p.error('--sample-index must be nonnegative')
 
-    from _common import ROOT, offline, prepare_fixture, read_config, write_json
+    from _common import ROOT, offline, read_config, write_json
     offline()
     # Validate local assets/export prepared sources before expensive model imports.
-    resolved = prepare_fixture(opts.config, opts.output_dir, sample_index=opts.sample_index)
+    resolved = prepare_parity_fixture(opts.config, opts.output_dir, opts.sample_index)
     _, acceptance = read_config(opts.config)
     sys.path.insert(0, str(ROOT / 'moshi-finetune'))
     import numpy as np
@@ -135,27 +224,33 @@ def main(argv=None):
     records = [json.loads(line) for line in Path(args.data.train_data).read_text().splitlines() if line.strip()]
     if len(records) != 1:
         raise ValueError('phase1 fixture must contain one selected sample')
-    path = Path(records[0]['path']).resolve()
+    # Preserve the exported WAV link so its adjacent Tim JSON remains addressable.
+    path = Path(records[0]['path']).absolute()
     metadata = json.loads(path.with_suffix('.json').read_text())
     if not metadata.get('text_prompt') or not metadata.get('voice_prompt'):
         raise ValueError('selected sample needs both text and voice prompts')
-    # Get the first chunk through Tim's exact sphn pipeline, no manual resampling.
+    # Scan this conversation through Tim's exact sphn pipeline, no manual resampling.
     dataset = sphn.dataset_jsonl(str(args.data.train_data), duration_sec=tokenizer.chunk_step_sec,
         num_threads=4, sample_rate=mimi.sample_rate, pad_last_segment=True).seq(skip=0, step_by=1)
-    chunk = next(iter(dataset))
-    wav = chunk['data'][..., :chunk['unpadded_len']]
-    start_sec = chunk['start_time_sec']
     source_sr = mimi.sample_rate
-    if wav.ndim != 2 or wav.shape[0] != 2:
-        raise ValueError('LEFT=agent, RIGHT=user stereo required')
     fingerprint_paths = [assets.mimi_weights, assets.tokenizer, resolved,
                          ROOT / 'moshi-finetune/finetune/data/interleaver.py',
                          ROOT / 'tim_compat/tokenization.py']
     hashes = {str(path): digest_file(path) for path in fingerprint_paths}
     fingerprint = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
     output = opts.output_dir.resolve()
-    report = io.StringIO()
-    observed = ObservedTokenizer(tokenizer, fingerprint, cache_dir=output / 'token_cache', report=report)
+    policy = runtime_filter_policy(model, interleaver)
+    sample_id = json.loads((resolved.parent / 'fixture.json').read_text())['samples'][0]['sample_id']
+    with (output / 'observations.jsonl').open('x') as report:
+        observed = ObservedTokenizer(tokenizer, fingerprint, cache_dir=output / 'token_cache',
+                                     report=report, validation_policy=policy)
+        chunk, miss, selection = select_valid_chunk(dataset, observed, path, sample_id,
+                                                    mimi.sample_rate, policy, output)
+        observations = [observed.last_observation]
+        wav = chunk['data'][..., :chunk['unpadded_len']]
+        start_sec = chunk['start_time_sec']
+        hit = observed(wav, start_sec, str(path))
+        observations.append(observed.last_observation)
     from tim_compat.tokenization import temporary_binding
     captured_alignments = []
     builder = interleaver.build_token_stream
@@ -165,24 +260,22 @@ def main(argv=None):
         return builder(alignments, segment_duration)
     with temporary_binding(interleaver, 'build_token_stream', capture):
         reference = tokenizer(wav, start_sec, str(path))
-    miss = observed(wav, start_sec, str(path))
-    hit = observed(wav, start_sec, str(path))
     comparisons = dict(observation_miss=compare_samples(reference, miss, torch),
                        cache_hit=compare_samples(reference, hit, torch))
-    observations = [json.loads(line) for line in report.getvalue().splitlines()]
     passed = (all(all(checks.values()) for checks in comparisons.values())
-              and [row['cache_hit'] for row in observations] == [False, True])
+              and [row['cache_hit'] for row in observations] == [False, True]
+              and chunk_rejection(hit, policy) is None)
     dump = inspect_sample(reference, interleaver, torch)
     ids = [int(token) for alignment in captured_alignments for token in alignment[0]]
     real_ids = [token for token in ids if token not in interleaver.special_tokens]
     text_tokenizer = info.get_text_tokenizer()
     placed = dump['dialogue_non_special_text_tokens']
-    dump.update(sample_id=json.loads((resolved.parent / 'fixture.json').read_text())['samples'][0]['sample_id'],
+    dump.update(**selection, filter_policy=asdict(policy), validation=miss.validation,
         chunk_start=start_sec, chunk_end=start_sec+wav.shape[-1]/mimi.sample_rate,
         number_of_real_text_tokens=len(real_ids), number_of_placed_text_tokens=placed,
         dropped_tokens=max(0, len(real_ids)-placed),
         dropped_tokens_definition='Requested lexical occurrences minus retained non-special dialogue occurrences; no token identity repair.',
-        overflow_status=any(x['overwritten'] or x['tail_pending'] for row in observations for x in row['dense_overflow']),
+        overflow_status=chunk_rejection(miss, policy) is not None,
         pass_=passed, comparisons=comparisons, sample_path=str(path), start_sec=start_sec,
         source_sample_rate=source_sr, mimi_sample_rate=mimi.sample_rate,
         mimi_frame_rate=mimi.frame_rate, input_wav_shape=list(wav.shape),
@@ -194,8 +287,8 @@ def main(argv=None):
             'No loss masks are invented: prompt_length and context_mask are the reference metadata consumed by Tim loss.',
             'Counts describe retained codes, not transcript completeness or lost dialogue/injection tails.',
             'Reference passes audio frame count to prepare_item segment_duration; this script preserves that behavior.',
-            'Queue diagnostics in observations replay occupancy before final crop, not actual final retained drop counts.',
-            'Chunk obtained from native sphn dataset iterator, ordered first chunk of selected sample.',
+            'Legacy dense_overflow is pre-crop; validation measures effective dialogue capacity and retained lexical/context counts.',
+            'Chunk obtained from native sphn dataset iterator, ordered first valid chunk of selected conversation.',
         ])
     torch.save(dict(codes=reference.codes.detach().cpu(), prompt_length=reference.prompt_length,
                     context_mask=None if reference.context_mask is None else reference.context_mask.detach().cpu()),

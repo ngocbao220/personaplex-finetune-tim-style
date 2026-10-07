@@ -7,6 +7,16 @@ import wave
 from pathlib import Path
 
 
+class PreparedAlignmentError(ValueError):
+    """Invalid source alignment, distinct from runtime/asset failures."""
+    def __init__(self, sample_id, index, word, duration, reason):
+        self.sample_id = sample_id
+        self.reason = reason
+        self.details = dict(word_index=index, audio_duration_sec=duration,
+                            word=repr(word))
+        super().__init__(f'invalid or unsorted alignment: {sample_id}: {word}')
+
+
 def _asset(root, value):
     path = (root / value).resolve()
     if not path.is_relative_to(root):
@@ -104,7 +114,7 @@ def _fingerprint(root, manifest):
     """Conservative content hash: invalidate on any source-root file change."""
     import hashlib
 
-    digest = hashlib.sha256(b"tim-prepared-export-v1\0")
+    digest = hashlib.sha256(b"tim-prepared-export-v2\0")
     digest.update(str(root).encode())
     digest.update(str(manifest).encode() + b"\0")
     for path in sorted(root.rglob("*")):
@@ -168,7 +178,9 @@ def _prepare_row(item):
         raise ValueError(f"LEFT=agent / RIGHT=user required: {sample_id}")
     duration = _wav_duration(audio, 2)
     _wav_duration(voice, 1)
-    prompt = metadata.get("text_prompt")
+    prompt = metadata.get("text_prompt_left")
+    if prompt is None:
+        prompt = metadata.get("text_prompt")
     if prompt is None:
         prompt = _asset(root, row.get("text_prompt_path", directory / "prompt.txt")).read_text()
     if not isinstance(prompt, str) or not prompt.strip():
@@ -178,13 +190,19 @@ def _prepare_row(item):
     labels = {"agent": "SPEAKER_BROKER", "user": "SPEAKER_CLIENT"}
     if not isinstance(words, list) or not words:
         raise ValueError(f"empty/non-list words: {sample_id}")
-    for word in words:
-        start, end = float(word["start"]), float(word["end"])
+    for index, word in enumerate(words):
+        try:
+            start, end = float(word["start"]), float(word["end"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise PreparedAlignmentError(sample_id, index, word, duration, 'invalid_timestamp') from error
+        if not all(map(math.isfinite, (start, end))):
+            raise PreparedAlignmentError(sample_id, index, word, duration, 'invalid_timestamp')
+        if not 0 <= start < end <= duration:
+            raise PreparedAlignmentError(sample_id, index, word, duration, 'timestamp_out_of_bounds')
         text = word["word"]
-        if (not all(map(math.isfinite, (start, end))) or
-                not 0 <= start < end <= duration or start < last_start or
+        if (start < last_start or
                 not isinstance(text, str) or not text.strip() or word["speaker"] not in labels):
-            raise ValueError(f"invalid or unsorted alignment: {sample_id}: {word}")
+            raise PreparedAlignmentError(sample_id, index, word, duration, 'invalid_alignment')
         alignments.append([text, [start, end], labels[word["speaker"]]])
         last_start = start
     return (sample_id, audio, voice, duration, {

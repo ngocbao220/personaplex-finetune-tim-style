@@ -34,7 +34,7 @@ Each JSONL row has `sample_id` and `sample_dir`, or explicit root-confined `audi
 
 - `conversation.wav`: two-channel 24kHz PCM, LEFT=agent, RIGHT=user.
 - `words.json`: ordered list of `word`, `start`, `end`, `speaker` (`agent`/`user`). Overlap is allowed; decreasing start times, nonfinite/out-of-bounds/zero durations and unknown speakers are rejected, not repaired.
-- `metadata.json`: explicit `agent_channel: left`, `user_channel: right`, prepared `text_prompt`; if absent, read existing `prompt.txt`.
+- `metadata.json`: explicit `agent_channel: left`, `user_channel: right`, prepared top-level `text_prompt_left`. If absent or null, use legacy `text_prompt`; if that is also absent or null, read existing `prompt.txt`. A non-null prompt must be a nonempty string; invalid values are rejected rather than bypassed. Exported Tim sidecars still use `text_prompt`. Export cache version is bumped to invalidate entries created with the old field selection.
 - `voice_prompt_left.wav`: mono 24kHz prepared agent voice; legacy `voice_prompt.wav` filename is supported. No region selection or synthesis.
 
 Agent/user labels map to Tim's `SPEAKER_BROKER`/`SPEAKER_CLIENT`. Words and prompt content retain their original order/text. Conversation WAVs are symlinked without rewriting channels or source files. Tim's unchanged `InterleavedTokenizer.__call__()` reads adjacent JSON and builds hybrid prompt/codes/masks itself.

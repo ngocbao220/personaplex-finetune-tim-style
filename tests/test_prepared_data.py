@@ -85,6 +85,37 @@ class PreparedDataTest(unittest.TestCase):
         adapted = interleaver.prepare_item(sidecar["alignments"], 1.0)
         self.assertTrue(torch.equal(reference, adapted))
 
+    def test_text_prompt_left_precedence_and_legacy_fallback(self):
+        metadata_path = self.directory / "metadata.json"
+        for index, (fields, expected) in enumerate((
+            ({"text_prompt_left": "Agent prompt."}, "Agent prompt."),
+            ({"text_prompt_left": "Agent prompt.", "text_prompt": "Legacy."}, "Agent prompt."),
+            ({"text_prompt": "Legacy."}, "Legacy."),
+            ({}, "File prompt."),
+        )):
+            with self.subTest(fields=fields):
+                metadata_path.write_text(json.dumps({
+                    "agent_channel": "left", "user_channel": "right", **fields}))
+                if not fields:
+                    (self.directory / "prompt.txt").write_text(expected)
+                before = metadata_path.read_bytes()
+                result = prepare_manifest(self.manifest, self.base / f"prompt-{index}")
+                record = json.loads(result.read_text())
+                sidecar = json.loads(Path(record["path"]).with_suffix(".json").read_text())
+                self.assertEqual(sidecar["text_prompt"], expected)
+                self.assertEqual(metadata_path.read_bytes(), before)
+
+    def test_invalid_text_prompt_left_does_not_use_legacy_prompt(self):
+        for index, prompt in enumerate(("", "   ", 123)):
+            with self.subTest(prompt=prompt):
+                (self.directory / "metadata.json").write_text(json.dumps({
+                    "agent_channel": "left", "user_channel": "right",
+                    "text_prompt_left": prompt, "text_prompt": "Legacy."}))
+                output = self.base / f"invalid-prompt-{index}"
+                with self.assertRaisesRegex(ValueError, "missing prepared text prompt"):
+                    prepare_manifest(self.manifest, output)
+                self.assertFalse(output.exists())
+
     def test_legacy_voice_name_and_manifest_order(self):
         (self.directory / "voice_prompt_left.wav").rename(self.directory / "voice_prompt.wav")
         second = {"sample_id": "two", "sample_dir": "samples/one"}

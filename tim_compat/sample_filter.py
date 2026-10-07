@@ -15,6 +15,8 @@ class FilterPolicy:
     zero_padding_id: int = -1
     require_agent_text: bool = True
     max_consecutive_rejections: int = 1000
+    text_sentinel_ids: tuple[int, ...] = ()
+    audio_sentinel_ids: tuple[int, ...] = ()
 
     def __post_init__(self):
         if self.text_cardinality <= 0 or self.audio_cardinality <= 0:
@@ -23,6 +25,19 @@ class FilterPolicy:
             raise ValueError("explicit reference nonlexical text IDs required")
         if self.max_consecutive_rejections <= 0:
             raise ValueError("max_consecutive_rejections must be positive")
+
+
+def token_bounds_error(tokens, cardinality, zero_padding_id, sentinel_ids=()):
+    """Describe invalid IDs, allowing only explicitly declared runtime sentinels."""
+    invalid = ((tokens < 0) | (tokens >= cardinality)) & (tokens != zero_padding_id)
+    for token_id in sentinel_ids:
+        invalid &= tokens != token_id
+    if invalid.any().item():
+        values = tokens[invalid]
+        return dict(cardinality=cardinality, invalid_count=values.numel(),
+                    invalid_min=int(values.min().item()), invalid_max=int(values.max().item()),
+                    zero_padding_id=zero_padding_id, sentinel_ids=list(sentinel_ids))
+    return None
 
 
 def rejection_reason(sample, policy):
@@ -40,12 +55,11 @@ def rejection_reason(sample, policy):
             not isinstance(mask, torch.Tensor) or mask.dtype != torch.bool or
             mask.shape != (frames,) or mask.device != codes.device):
         return "invalid_context_mask"
-    for tokens, cardinality, reason in (
-        (codes[:, 0], policy.text_cardinality, "text_token_out_of_bounds"),
-        (codes[:, 1:], policy.audio_cardinality, "audio_token_out_of_bounds"),
+    for tokens, cardinality, sentinels, reason in (
+        (codes[:, 0], policy.text_cardinality, policy.text_sentinel_ids, "text_token_out_of_bounds"),
+        (codes[:, 1:], policy.audio_cardinality, policy.audio_sentinel_ids, "audio_token_out_of_bounds"),
     ):
-        invalid = ((tokens < 0) | (tokens >= cardinality)) & (tokens != policy.zero_padding_id)
-        if invalid.any().item():
+        if token_bounds_error(tokens, cardinality, policy.zero_padding_id, sentinels):
             return reason
     if policy.require_agent_text:
         text = codes[0, 0, prompt:]
