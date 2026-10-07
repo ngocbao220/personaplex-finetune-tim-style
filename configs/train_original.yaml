@@ -3,6 +3,7 @@
 # Eval must fit native 40-batch cap; export a separate held-out subset.
 # prompt_budget_frames=0 preserves upstream behavior; measure before changing it.
 data:
+  vietnamese_text_mode: diacritics # diacritics | no_diacritics | telex; local bridge consumes this key.
   train_data: /absolute/exports/tim-train/train.jsonl
   eval_data: /absolute/exports/tim-eval/train.jsonl
   shuffle: true

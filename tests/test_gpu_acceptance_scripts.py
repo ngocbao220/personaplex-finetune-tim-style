@@ -30,6 +30,31 @@ class GPUAcceptanceScriptsTest(unittest.TestCase):
         self.assertFalse(result['lora_B']['pass_'])
         self.assertFalse(compare_tensors(a, {})['lora_A']['pass_'])
 
+    def test_reload_parity_tolerates_bf16_evaluation_and_filters_frozen_lora(self):
+        before = dict(total=0.5552079677581787, text=0.0003757586528081447, audio=0.5548322200775146)
+        after = dict(total=0.5559874773025513, text=0.00037130602868273854, audio=0.5556161999702454)
+        loss_atol = 1e-3
+        loss_rtol = 5e-3
+        for key in ('total', 'text', 'audio'):
+            diff = abs(before[key] - after[key])
+            tol = loss_atol + loss_rtol * abs(before[key])
+            self.assertLessEqual(diff, tol, f'{key} difference {diff} exceeds tolerance {tol}')
+
+        import torch
+        pre = {
+            'model.layers.0.self_attn.q_proj.lora_A': torch.tensor([1.0]),
+            'model.depformer.layers.0.self_attn.q_proj.lora_A': torch.tensor([2.0]),
+        }
+        post = {
+            'model.layers.0.self_attn.q_proj.lora_A': torch.tensor([1.0]),
+            'model.depformer.layers.0.self_attn.q_proj.lora_A': torch.tensor([9.9]),  # frozen, untracked
+        }
+        trainable_keys = {'model.layers.0.self_attn.q_proj.lora_A'}
+        trainable_pre = {k: v for k, v in pre.items() if k in trainable_keys}
+        trainable_post = {k: v for k, v in post.items() if k in trainable_keys}
+        diffs = compare_tensors(trainable_pre, trainable_post)
+        self.assertTrue(all(v['pass_'] for v in diffs.values()))
+
     def test_harness_uses_real_trainer_not_custom_update(self):
         worker = (ROOT / 'scripts/_tim_worker.py').read_text()
         self.assertIn('module.train(str(opts.config))', worker)

@@ -64,6 +64,8 @@ def main():
     opts = p.parse_args()
     offline()
     values, acceptance = read_config(opts.config)
+    from tim_compat.text_normalization import text_mode_from_config, write_generated_text, decode_vietnamese_telex, text_error_metrics
+    text_mode = text_mode_from_config(values)
     infer = dict(acceptance.get('inference', {}))
     for key in ('input_file', 'sample_id', 'user_channel', 'start_sec', 'window_seconds', 'original_wav', 'voice_prompt', 'text_prompt_file', 'text_prompt'):
         value = getattr(opts, key)
@@ -104,6 +106,12 @@ def main():
     metadata = json.loads(adapter_config.read_text())
     if not {'lora_rank', 'lora_scaling'}.issubset(metadata):
         raise ValueError('adapter config missing explicit lora_rank/lora_scaling; refuse merge defaults')
+    saved_text_mode = metadata.get('vietnamese_text_mode')
+    if saved_text_mode is not None:
+        recorded_mode = text_mode_from_config({'data': {'vietnamese_text_mode': saved_text_mode}})
+        if 'vietnamese_text_mode' in values.get('data', {}) and text_mode != recorded_mode:
+            raise ValueError('inference data.vietnamese_text_mode differs from checkpoint metadata')
+        text_mode = recorded_mode
     from tim_compat.local_checkpoint import LocalAssets
     assets = LocalAssets.resolve(acceptance['model_root'], **{
         key: values.get('moshi_paths', {}).get(key)
@@ -139,13 +147,14 @@ def main():
     output = opts.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
     report = dict(status='FAIL', backend='bundled PersonaPlex offline (not training LMGen parity)',
-                  checkpoint=str(checkpoint), inputs={k: str(v) for k, v in paths.items()})
+                  checkpoint=str(checkpoint), inputs={k: str(v) for k, v in paths.items()},
+                  vietnamese_text_mode=text_mode)
     try:
         if opts.native_weight is None:
             signature = dict(inputs=report['inputs'], seed=values.get('seed', 0), greedy=opts.greedy,
                              base_weights=str(assets.moshi_weights), user_channel=user_channel,
                              start_sec=window_start, window_seconds=infer.get('window_seconds'),
-                             text_prompt=prompt_text)
+                             text_prompt=prompt_text, vietnamese_text_mode=text_mode)
             import hashlib
             signature['input_hashes'] = {k: hashlib.sha256(v.read_bytes()).hexdigest() for k, v in paths.items()}
             # Derived path is run-specific: baseline identity uses source hash and window.
@@ -193,13 +202,20 @@ def main():
             hypotheses = {}
             for route in ('base', 'current'):
                 hypotheses[route] = text_from_pieces(json.loads((output / route / 'agent_text.json').read_text()))
+                write_generated_text(output / route / 'agent.txt', hypotheses[route], text_mode)
             reference = paths['reference_text_file'].read_text().strip() if 'reference_text_file' in paths else None
+            current_metrics = text_error_metrics(reference, hypotheses['current'], text_mode) if reference else None
+            base_metrics = text_error_metrics(reference, hypotheses['base'], text_mode) if reference else None
             manifest = dict(sample_id=infer.get('sample_id', paths['original_wav'].stem),
                 step=opts.step if opts.step is not None else infer.get('step'), checkpoint=str(checkpoint),
-                comparison_signature=signature,
+                comparison_signature=signature, vietnamese_text_mode=text_mode,
                 hypothesis=hypotheses['current'], transcript=hypotheses['current'],
                 base_hypothesis=hypotheses['base'], reference=reference, raw_reference=reference,
-                cer=None, wer=None, metrics_status='not computed; native token text is not ASR scoring',
+                cer=current_metrics['cer'] if current_metrics else None,
+                wer=current_metrics['wer'] if current_metrics else None,
+                text_metrics=current_metrics, base_text_metrics=base_metrics,
+                metrics_status=('native generated text vs supplied reference; not ASR' if current_metrics
+                                else 'not computed; missing/empty reference'),
                 window_start_sec=window_start,
                 window_duration_sec=loaded['original'].shape[-1] / 24000,
                 sample_rate=24000, channels=({'left': 'user', 'right': 'agent'} if user_channel == 'left'
@@ -211,6 +227,13 @@ def main():
                 inputs=report['inputs'], base_weights=str(assets.moshi_weights),
                 audio_files=dict(original='dialogue_original.wav', base='dialogue_base.wav',
                                  current_step='dialogue_step.wav'))
+            if text_mode == 'telex':
+                manifest['hypothesis_unicode'] = decode_vietnamese_telex(hypotheses['current'])
+                manifest['base_hypothesis_unicode'] = decode_vietnamese_telex(hypotheses['base'])
+                manifest['text_files'] = {'base': 'base/agent.txt', 'current': 'current/agent.txt',
+                    'base_unicode': 'base/agent_unicode.txt', 'current_unicode': 'current/agent_unicode.txt'}
+            else:
+                manifest['text_files'] = {'base': 'base/agent.txt', 'current': 'current/agent.txt'}
             manifest['window_end_sec'] = manifest['window_start_sec'] + manifest['window_duration_sec']
             write_json(output / 'manifest.json', manifest)
             report.update(status='PASS', manifest=str(output / 'manifest.json'))
@@ -252,6 +275,7 @@ def main():
             native.hf_hub_download = original_download
         require_file(output / 'agent.wav')
         tokens = json.loads(require_file(output / 'agent_text.json').read_text())
+        write_generated_text(output / 'agent.txt', text_from_pieces(tokens), text_mode)
         import numpy as np
         generated, sr = sphn.read(str(output / 'agent.wav'))
         if not np.isfinite(generated).all() or not generated.size or not tokens:

@@ -34,6 +34,72 @@ class PreparedDataTest(unittest.TestCase):
         self.manifest = self.root / "train.jsonl"
         self.manifest.write_text(json.dumps({"sample_id": "one", "sample_dir": "samples/one"}) + "\n")
 
+    def test_text_modes_transform_only_agent_targets_and_keep_raw_cache(self):
+        words = [{"word": "tiếng", "start": .1, "end": .4, "speaker": "agent"},
+                 {"word": "Đặng", "start": .5, "end": .8, "speaker": "user"}]
+        original = json.dumps(words, ensure_ascii=False).encode()
+        (self.directory / "words.json").write_bytes(original)
+        expected = {'diacritics': 'tiếng', 'no_diacritics': 'tieng', 'telex': 'tieengs'}
+        for mode, target in expected.items():
+            result = prepare_manifest(self.manifest, self.base / mode,
+                                      cache_dir=self.base / 'cache', vietnamese_text_mode=mode)
+            row = json.loads(result.read_text())
+            sidecar = json.loads(Path(row['path']).with_suffix('.json').read_text())
+            self.assertEqual(sidecar['alignments'][0], [target, [.1, .4], 'SPEAKER_BROKER'])
+            self.assertEqual(sidecar['alignments'][1], ['Đặng', [.5, .8], 'SPEAKER_CLIENT'])
+            self.assertEqual(sidecar['text_prompt'], 'Be helpful.')
+            self.assertEqual(sidecar['vietnamese_text_mode'], mode)
+            self.assertEqual(row['vietnamese_text_mode'], mode)
+        self.assertEqual((self.directory / 'words.json').read_bytes(), original)
+        with self.assertRaises(ValueError):
+            prepare_manifest(self.manifest, self.base / 'bad', vietnamese_text_mode='invalid')
+        self.assertFalse((self.base / 'bad').exists())
+
+    def test_acceptance_export_threads_mode_into_native_worker_fixture(self):
+        import yaml
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+        from _common import prepare_fixture
+        (self.directory / 'words.json').write_text(json.dumps([
+            {'word':'tiếng','start':.1,'end':.4,'speaker':'agent'}], ensure_ascii=False))
+        config = self.base / 'acceptance.yaml'
+        config.write_text(yaml.safe_dump({'acceptance':{'model_root':str(self.base),
+            'prepared_manifest':str(self.manifest)},'data':{'vietnamese_text_mode':'telex'},
+            'lora':{'enable':True},'max_steps':2}))
+        assets = SimpleNamespace(moshi_weights=self.base / 'model', mimi_weights=self.base / 'mimi',
+                                 tokenizer=self.base / 'tokenizer')
+        with patch('tim_compat.local_checkpoint.LocalAssets.resolve', return_value=assets):
+            result = prepare_fixture(config, self.base / 'acceptance')
+        resolved = yaml.safe_load(result.read_text())
+        self.assertNotIn('vietnamese_text_mode', resolved['data'])
+        row = json.loads(Path(resolved['data']['train_data']).read_text())
+        self.assertEqual(row['vietnamese_text_mode'], 'telex')
+        sidecar = json.loads(Path(row['path']).with_suffix('.json').read_text())
+        self.assertEqual(sidecar['alignments'][0][0], 'tieengs')
+        fixture = json.loads((result.parent / 'fixture.json').read_text())
+        self.assertEqual(fixture['vietnamese_text_mode'], 'telex')
+
+    def test_prepare_cli_reads_mode_and_emits_train_config(self):
+        import subprocess
+        import yaml
+        from tim_compat.training_config import native_training_config
+        config = self.base / 'train.yaml'
+        config.write_text(yaml.safe_dump({'data':{'vietnamese_text_mode':'telex',
+            'train_data':'/unused.jsonl','eval_data':''}, 'run_dir':'/unused-run'}))
+        before = config.read_bytes()
+        output = self.base / 'cli-export'
+        project = Path(__file__).resolve().parents[1]
+        result = subprocess.run([sys.executable, str(project / 'prepare_data.py'),
+            '--manifest',str(self.manifest),'--output',str(output),'--config',str(config)],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        derived = output / 'train.yaml'
+        self.assertEqual(yaml.safe_load(derived.read_text())['data']['vietnamese_text_mode'], 'telex')
+        with native_training_config(derived) as native:
+            self.assertNotIn('vietnamese_text_mode', yaml.safe_load(native.read_text())['data'])
+        self.assertEqual(config.read_bytes(), before)
+
     def test_disabled_returns_reference_manifest_untouched(self):
         original = self.base / "not-required-to-exist.jsonl"
         self.assertEqual(prepare_manifest(original, enabled=False), original)

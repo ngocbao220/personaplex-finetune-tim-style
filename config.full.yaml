@@ -21,6 +21,7 @@ acceptance:
     # reference_text_file: /absolute/prepared/agent_reference.txt # Transcript agent trong đúng cửa sổ (tùy chọn).
 
 data:
+  vietnamese_text_mode: diacritics # diacritics | no_diacritics | telex; local bridge consumes this key.
   train_data: "" # Harness tự export và gán manifest train của tập mẫu được chọn.
   eval_data: "" # Harness gán cùng tập cố định để đo overfit.
   shuffle: false # Giữ nguyên thứ tự samples, không shuffle.

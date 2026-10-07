@@ -228,7 +228,8 @@ def main():
             invoke = lambda: module.train(str(opts.config))
         else:
             import train_local
-            bridge_args = ['--config', str(opts.config), '--model-root', model_root]
+            bridge_args = ['--config', str(opts.config), '--model-root', model_root,
+                           '--vietnamese-text-mode', fixture.get('vietnamese_text_mode', 'diacritics')]
             acceptance = fixture['acceptance']
             if not opts.stop_step and acceptance.get('inference', {}).get('free_running_every_steps', 0):
                 bridge_args += ['--free-running-config', fixture['config']]

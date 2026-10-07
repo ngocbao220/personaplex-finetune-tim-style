@@ -105,10 +105,11 @@ class InferenceInputTest(unittest.TestCase):
             (checkpoint / 'lora.safetensors').write_bytes(b'placeholder')
             (checkpoint / 'config.json').write_text(json.dumps({'lora_rank':64,'lora_scaling':2}))
             base = root / 'base.safetensors'; base.write_bytes(b'base')
-            values = {'seed':0,'moshi_paths':{}}
+            reference = root / 'reference.txt'; reference.write_text('tiếng Việt', encoding='utf-8')
+            values = {'seed':0,'moshi_paths':{}, 'data':{'vietnamese_text_mode':'telex'}}
             acceptance = {'model_root':str(root), 'inference':{'original_wav':str(source),
                 'voice_prompt':str(voice),'text_prompt':'Persona','user_channel':'left',
-                'start_sec':.25,'window_seconds':.5}}
+                'start_sec':.25,'window_seconds':.5, 'reference_text_file':str(reference)}}
             calls = []
             def child(command, **kwargs):
                 calls.append(command)
@@ -117,7 +118,7 @@ class InferenceInputTest(unittest.TestCase):
                 self.assertGreater(float(user.mean()), 0)
                 output = Path(command[command.index('--output-dir')+1]); output.mkdir()
                 sphn.write_wav(str(output / 'agent.wav'), user * .5, rate)
-                (output / 'agent_text.json').write_text('["BOS", "hi"]')
+                (output / 'agent_text.json').write_text('["BOS", "tieengs Vieetj"]')
                 return SimpleNamespace(returncode=0)
             assets = SimpleNamespace(config=checkpoint / 'config.json',moshi_weights=base)
             adapter = SimpleNamespace(keys=lambda:['layer.lora_B.weight'])
@@ -141,10 +142,21 @@ class InferenceInputTest(unittest.TestCase):
                             '--output-dir',str(root / 'mismatch'),'--baseline-dir',str(root / 'run1')]
                     with patch.object(sys, 'argv', argv), self.assertRaisesRegex(ValueError, 'mismatch'):
                         runner.main()
+                    (checkpoint / 'config.json').write_text(json.dumps({'lora_rank':64, 'lora_scaling':2,
+                                                                         'vietnamese_text_mode':'no_diacritics'}))
+                    with patch.object(sys, 'argv', argv), self.assertRaisesRegex(ValueError, 'differs from checkpoint'):
+                        runner.main()
                 self.assertEqual(len(calls), 3)  # first base/current, second current only
                 manifest = json.loads((root / 'run2/manifest.json').read_text())
                 self.assertEqual(manifest['channels'], {'left':'user','right':'agent'})
                 self.assertEqual(manifest['window_start_sec'], .25)
                 self.assertEqual(manifest['window_duration_sec'], .5)
+                self.assertEqual(manifest['cer'], 0)
+                self.assertEqual(manifest['wer'], 0)
+                self.assertEqual(manifest['raw_reference'], 'tiếng Việt')
+                self.assertEqual(manifest['vietnamese_text_mode'], 'telex')
+                self.assertEqual(manifest['hypothesis'], 'tieengs Vieetj')
+                self.assertEqual(manifest['hypothesis_unicode'], 'tiếng Việt')
+                self.assertEqual((root / 'run2/current/agent_unicode.txt').read_text(), 'tiếng Việt')
             finally:
                 sys.path[:] = old_path

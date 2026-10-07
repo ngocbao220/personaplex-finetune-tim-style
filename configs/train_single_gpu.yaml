@@ -4,6 +4,7 @@
 # Eval disabled to avoid native 40-batch cap; gen_eval/API and WandB disabled.
 # 10s must fit your prompts; increase duration if prompt/dialogue is truncated.
 data:
+  vietnamese_text_mode: diacritics # diacritics | no_diacritics | telex; local bridge consumes this key.
   train_data: /absolute/exports/tim-train/train.jsonl
   eval_data: ''
   shuffle: true

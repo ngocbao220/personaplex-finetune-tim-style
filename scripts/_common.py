@@ -32,6 +32,8 @@ def read_config(path):
     for key in ('model_root', 'prepared_manifest'):
         if not Path(acceptance[key]).is_absolute():
             raise ValueError(f'acceptance.{key} must be absolute')
+    from tim_compat.text_normalization import text_mode_from_config
+    text_mode_from_config(values)
     return values, acceptance
 
 
@@ -40,6 +42,8 @@ def prepare_fixture(config, output, num_samples=1, sample_index=0, max_steps=Non
     from tim_compat.prepared_data import prepare_manifest
     from tim_compat.local_checkpoint import LocalAssets
     values, acceptance = read_config(config)
+    from tim_compat.text_normalization import text_mode_from_config
+    text_mode = text_mode_from_config(values)
     output = Path(output).resolve()
     if output.exists():
         raise FileExistsError(f'use a fresh output directory: {output}')
@@ -50,7 +54,9 @@ def prepare_fixture(config, output, num_samples=1, sample_index=0, max_steps=Non
                          f'total={len(rows)}, sample_index={sample_index}, num_samples={num_samples}')
     output.mkdir(parents=True, exist_ok=False)
     # Preserve prepared-root path resolution; export first, select exported rows.
-    exported = prepare_manifest(acceptance['prepared_manifest'], output / 'prepared')
+    exported = prepare_manifest(acceptance['prepared_manifest'], output / 'prepared',
+                                vietnamese_text_mode=text_mode)
+    values.get('data', {}).pop('vietnamese_text_mode', None)
     tim_rows = [json.loads(x) for x in exported.read_text().splitlines() if x.strip()]
     manifest = output / 'selected.jsonl'
     manifest.write_text(''.join(json.dumps(x)+'\n' for x in tim_rows[sample_index:sample_index+num_samples]))
@@ -76,6 +82,7 @@ def prepare_fixture(config, output, num_samples=1, sample_index=0, max_steps=Non
     resolved = output / 'resolved.yaml'
     resolved.write_text(yaml.safe_dump(values, sort_keys=False))
     write_json(output / 'fixture.json', dict(acceptance=acceptance, samples=selected,
+        vietnamese_text_mode=text_mode,
         overrides='ordered sample subset, no shuffle, logging/checkpoint/eval routing; optimizer/scheduler/precision unchanged',
         config=str(Path(config).resolve()), resolved=str(resolved)))
     return resolved

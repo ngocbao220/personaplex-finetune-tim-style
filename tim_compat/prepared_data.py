@@ -36,7 +36,8 @@ def _wav_duration(path, channels):
     return duration
 
 
-def prepare_manifest(manifest, output=None, *, enabled=True, workers=0, cache_dir=None):
+def prepare_manifest(manifest, output=None, *, enabled=True, workers=0, cache_dir=None,
+                     vietnamese_text_mode='diacritics'):
     """Materialize ordered Tim sidecars, without changing any source or sequence.
 
     Disabled mode returns the exact original manifest path without reading it.
@@ -45,6 +46,8 @@ def prepare_manifest(manifest, output=None, *, enabled=True, workers=0, cache_di
     """
     if not enabled:
         return Path(manifest)
+    from .text_normalization import normalize_vietnamese_text
+    normalize_vietnamese_text('', vietnamese_text_mode)
     if isinstance(workers, bool) or not isinstance(workers, int) or workers < 0:
         raise ValueError("workers must be a nonnegative integer")
     manifest = Path(manifest).resolve()
@@ -100,10 +103,16 @@ def prepare_manifest(manifest, output=None, *, enabled=True, workers=0, cache_di
     output.mkdir(parents=True)
     records = []
     for sample_id, audio, voice, duration, sidecar in samples:
+        # Cache stores raw prepared text; apply each mode exactly once on export.
+        sidecar = dict(sidecar, vietnamese_text_mode=vietnamese_text_mode,
+            alignments=[[normalize_vietnamese_text(text, vietnamese_text_mode)
+                         if speaker == 'SPEAKER_BROKER' else text, timestamps, speaker]
+                        for text, timestamps, speaker in sidecar['alignments']])
         wav_path = output / f"{sample_id}.wav"
         wav_path.symlink_to(audio)
         wav_path.with_suffix(".json").write_text(json.dumps(sidecar, ensure_ascii=False) + "\n")
-        records.append(json.dumps({"path": str(wav_path), "duration": duration}))
+        records.append(json.dumps({"path": str(wav_path), "duration": duration,
+                                   "vietnamese_text_mode": vietnamese_text_mode}))
     result = output / "train.jsonl"
     result.write_text("\n".join(records) + "\n")
     print(f"Prepared adapter: {len(samples)} samples; LEFT=agent, RIGHT=user; first={samples[0][0]}")

@@ -147,6 +147,32 @@ Dùng `train_original.yaml` khi cần recipe gốc và đủ tài nguyên. Resum
 
 Native config không có section `acceptance`; bind exported Tim manifest, không đưa prepared manifest trực tiếp vào Tim loader. Giữ `system_prompt.enable: true` để dùng prepared voice/text prompts. Chạy acceptance trên 10 samples trước khi train quy mô lớn.
 
+### Vietnamese text mode
+
+Local bridge nhận `data.vietnamese_text_mode` giống code cũ `personaplex-finetuning`:
+
+```yaml
+data:
+  vietnamese_text_mode: telex # diacritics | no_diacritics | telex
+```
+
+`diacritics` giữ Unicode gốc; `no_diacritics` bỏ dấu (`Đặng` → `Dang`); `telex` dùng Telex chuẩn (`tiếng Việt` → `tieengs Vieetj`). Chỉ text target agent được đổi khi export; timestamps, user transcript, voice/system prompts và prepared sources giữ nguyên. Export cache lưu text gốc, token cache đọc hash sidecar đã đổi mode.
+
+Đặt mode trong config train, rồi export lại vào thư mục mới:
+
+```bash
+python "$PROJECT/prepare_data.py" \
+  --manifest /absolute/prepared/manifest.jsonl \
+  --output /absolute/exports/tim-telex \
+  --config "$PROJECT/configs/train_single_gpu.yaml"
+```
+
+Dùng `/absolute/exports/tim-telex/train.yaml` với `train_local.py`. Eval phải được export cùng mode. Khi export không dùng config, có thể truyền `--vietnamese-text-mode telex`; khi có config, flag phải khớp mode trong config. Đổi mode cần export lại, không sửa transcript gốc.
+
+Key này là extension của **local bridge**, không truyền thẳng YAML chứa nó vào trainer frozen. Bridge kiểm tra mode trong manifest/sidecar trước khi train, tạo YAML native tạm không có key này, và ghi mode vào metadata checkpoint. Acceptance tự export theo mode trong `config.full.yaml`; fixture lưu mode và snapshot/cache dùng dữ liệu đã normalize.
+
+Inference dùng cùng key. Checkpoint mới ghi mode trong `config.json`; config inference khác mode sẽ bị từ chối. Với checkpoint cũ chưa có metadata này, phải chọn đúng mode đã dùng khi train. Generation giữ raw model text trong `base/agent.txt`, `current/agent.txt`; Telex thêm `agent_unicode.txt` ở mỗi thư mục và bản Unicode trong manifest. Baseline reuse kiểm tra cả mode. Nếu có `reference_text_file`, CER/WER so sánh native generated text với reference trong representation tương ứng (Telex chấm trên Telex), không phải transcript ASR; thiếu reference thì metrics là `null`.
+
 ## 5. Filter invalid data
 
 **Đã có filter, nhưng mặc định không bật.** Nó kiểm tra actual Tim `Sample` sau tokenize/crop/prompt/injection, không tái tạo sequence và không thay nội dung sample hợp lệ.

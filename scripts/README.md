@@ -93,7 +93,7 @@ Kết quả trong output directory:
 - `manifest.json`: sample/step, cửa sổ, seed, generation settings, transcript base/current, reference tùy chọn và tên audio files.
 - `base/`, `current/`: mono `agent.wav`, native `agent_text.json`, summary và merge artifacts; logs ở `base.log`, `current.log`.
 
-Dialogue WAV dùng 24 kHz; stereo giữ thứ tự kênh nguồn theo `user_channel`, ghi rõ trong manifest. Với nguồn mono, original giữ mono, base/current là LEFT=agent, RIGHT=user. Script fail nếu user không khớp kênh đã chọn hoặc độ dài các outputs khác nhau. Transcript ghép từ native text token pieces, không phải ASR. CER/WER hiện để `null` và ghi rõ chưa tính, không giả lập metrics.
+Dialogue WAV dùng 24 kHz; stereo giữ thứ tự kênh nguồn theo `user_channel`, ghi rõ trong manifest. Với nguồn mono, original giữ mono, base/current là LEFT=agent, RIGHT=user. Script fail nếu user không khớp kênh đã chọn hoặc độ dài các outputs khác nhau. Transcript ghép từ native text token pieces, không phải ASR. `data.vietnamese_text_mode` hỗ trợ `diacritics`, `no_diacritics`, `telex`; Telex giữ raw `agent.txt` và thêm `agent_unicode.txt`. Khi có `reference_text_file`, CER/WER so sánh native text trong representation đã chọn; thiếu reference thì để `null`. Mode được ghi trong manifest/checkpoint và baseline signature. Xem README root để export/train cùng mode.
 
 ### Free-running trong lúc train
 

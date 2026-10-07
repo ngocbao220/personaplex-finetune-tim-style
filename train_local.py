@@ -10,7 +10,7 @@ from pathlib import Path
 
 from tim_compat.local_checkpoint import LocalAssets, local_checkpoint_loader
 from tim_compat.sample_filter import FilterPolicy, sample_filter_loader
-from tim_compat.training_config import bind_training_manifest
+from tim_compat.training_config import bind_training_manifest, native_training_config, checkpoint_text_mode
 from tim_compat.tokenization import tokenizer_bridge, digest_file
 
 
@@ -29,6 +29,8 @@ def main(argv=None):
     parser.add_argument("--token-report", type=Path)
     parser.add_argument("--free-running-config", type=Path,
                         help="Acceptance YAML containing inference inputs and periodic frequency")
+    parser.add_argument('--vietnamese-text-mode', choices=('diacritics', 'no_diacritics', 'telex'),
+                        help='Override mode for an already exported Tim manifest')
     args = parser.parse_args(argv)
     LocalAssets.resolve(args.model_root)  # Fail before importing GPU training code.
     if not args.config.is_file():
@@ -46,6 +48,9 @@ def main(argv=None):
         parser.error("materialize config once before multi-rank launch; pass it with --config")
     config = bind_training_manifest(args.config, args.train_manifest, args.resolved_config,
                                     enabled=args.train_manifest is not None)
+    import yaml
+    from tim_compat.text_normalization import text_mode_from_config
+    text_mode = args.vietnamese_text_mode or text_mode_from_config(yaml.safe_load(config.read_text()))
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     root = Path(__file__).resolve().parent
@@ -55,16 +60,21 @@ def main(argv=None):
     spec = importlib.util.spec_from_file_location("tim_reference_train", root / "moshi-finetune/train.py")
     module = importlib.util.module_from_spec(spec)
     with ExitStack() as stack:
+        original_config = config
+        config = stack.enter_context(native_training_config(config, vietnamese_text_mode=text_mode))
         stack.enter_context(local_checkpoint_loader(loaders, args.model_root))
         spec.loader.exec_module(module)
+        from finetune.checkpointing import Checkpointer
+        stack.enter_context(checkpoint_text_mode(Checkpointer, text_mode))
         if args.free_running_config is not None:
             import yaml
             from tim_compat.free_running import periodic_free_running
             settings = yaml.safe_load(args.free_running_config.read_text()).get('acceptance', {}).get('inference', {})
             # Use actual trainer run_dir/LoRA settings with external inference assets.
             inference_values = yaml.safe_load(args.free_running_config.read_text())
-            native_values = yaml.safe_load(config.read_text())
+            native_values = yaml.safe_load(original_config.read_text())
             inference_values.update(native_values)
+            inference_values.setdefault('data', {})['vietnamese_text_mode'] = text_mode
             import tempfile
             handle = stack.enter_context(tempfile.NamedTemporaryFile(mode='w', suffix='.yaml'))
             yaml.safe_dump(inference_values, handle)

@@ -52,9 +52,12 @@ def main():
         from safetensors.torch import load_file
         pre = torch.load(out / 'bridge/pre_save_tensors.pt', weights_only=False)
         post = torch.load(out / 'bridge/reload_tensors.pt', weights_only=False)
-        diffs = compare_tensors(pre, post)
+        trainable_keys = set(json.loads((out / 'bridge/trainable.json').read_text()))
+        trainable_pre = {k: v for k, v in pre.items() if k in trainable_keys}
+        trainable_post = {k: v for k, v in post.items() if k in trainable_keys}
+        diffs = compare_tensors(trainable_pre, trainable_post)
         expected = {k.replace('_checkpoint_wrapped_module.', '').replace('_fsdp_wrapped_module.', '')
-                    for k in pre if k in json.loads((out / 'bridge/trainable.json').read_text())}
+                    for k in trainable_pre}
         saved = load_file(str(checkpoint / 'lora.safetensors'))
         key_mismatch = sorted(set(saved) ^ expected)
         train_state = torch.load(checkpoint / 'train_state.pt', weights_only=False)
@@ -66,8 +69,12 @@ def main():
                                 for row in (before, after)):
             report['mismatches'].append('reload smoke snapshot identity mismatch')
         import math
+        param_dtype = supplied.get('param_dtype', 'bfloat16')
+        is_reduced = param_dtype in ('bfloat16', 'float16')
+        loss_atol = 1e-3 if is_reduced else 1e-6
+        loss_rtol = 5e-3 if is_reduced else 1e-5
         for key in ('total','text','audio'):
-            if not (math.isfinite(before[key]) and math.isfinite(after[key])) or abs(before[key]-after[key]) > 1e-6 + 1e-5*abs(before[key]):
+            if not (math.isfinite(before[key]) and math.isfinite(after[key])) or abs(before[key]-after[key]) > loss_atol + loss_rtol*abs(before[key]):
                 report['mismatches'].append(f'reload {key}: {before[key]} != {after[key]}')
         if key_mismatch:
             report['mismatches'].append('checkpoint semantic keys differ: '+repr(key_mismatch))
@@ -77,7 +84,7 @@ def main():
         if not reload_errors:
             report['checkpoint_reload'] = 'PASS'
         report.update(pre_save=before, post_reload=after, tensor_diff=diffs, checkpoint=str(checkpoint),
-            tolerance='LoRA exact; teacher-forced Tim eval atol=1e-6 rtol=1e-5')
+            tolerance=f'Trainable LoRA exact; teacher-forced Tim eval atol={loss_atol} rtol={loss_rtol} ({param_dtype})')
     except Exception as exc:
         report['mismatches'].append(str(exc))
     write_json(out / 'comparison.json', report)

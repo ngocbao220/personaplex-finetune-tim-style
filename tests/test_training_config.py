@@ -27,6 +27,43 @@ class TrainingConfigTest(unittest.TestCase):
         self.manifest.write_text(json.dumps({'path': '/export/one.wav', 'duration': 1.0}) + '\n')
         self.output = self.root / 'derived.yaml'
 
+    def test_native_config_consumes_mode_and_rejects_wrong_export(self):
+        from tim_compat.training_config import native_training_config
+        self.values['data']['vietnamese_text_mode'] = 'telex'
+        self.values['data']['train_data'] = str(self.manifest)
+        self.config.write_text(yaml.safe_dump(self.values))
+        before = self.config.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'mode'):
+            with native_training_config(self.config):
+                pass
+        wav = self.root / 'one.wav'
+        wav.with_suffix('.json').write_text(json.dumps({'vietnamese_text_mode':'telex'}))
+        self.manifest.write_text(json.dumps({'path':str(wav),'duration':1.,'vietnamese_text_mode':'telex'})+'\n')
+        with native_training_config(self.config) as native:
+            normalized = yaml.safe_load(native.read_text())
+            self.assertNotIn('vietnamese_text_mode', normalized['data'])
+            self.assertEqual(normalized['data']['train_data'], str(self.manifest))
+            self.assertTrue(native.exists())
+        self.assertFalse(native.exists())
+        self.assertEqual(before, self.config.read_bytes())
+        self.values['data'].pop('vietnamese_text_mode')
+        self.config.write_text(yaml.safe_dump(self.values))
+        with native_training_config(self.config, vietnamese_text_mode='telex') as native:
+            self.assertNotIn('vietnamese_text_mode', yaml.safe_load(native.read_text())['data'])
+
+    def test_checkpoint_records_mode_without_leaking_patch(self):
+        from tim_compat.training_config import checkpoint_text_mode
+        class Checkpointer:
+            def __init__(self, config):
+                self.config = config
+        original = Checkpointer.__init__
+        raw = {'lora_rank':64}
+        with checkpoint_text_mode(Checkpointer, 'telex'):
+            checkpoint = Checkpointer(raw)
+            self.assertEqual(checkpoint.config['vietnamese_text_mode'], 'telex')
+            self.assertNotIn('vietnamese_text_mode', raw)
+        self.assertIs(Checkpointer.__init__, original)
+
     def test_disabled_returns_original_path_without_reading_anything(self):
         missing = self.root / 'missing.yaml'
         self.assertEqual(bind_training_manifest(missing, None, None, enabled=False), missing)

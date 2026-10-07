@@ -1,0 +1,50 @@
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local Python environments and package builds
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+
+# Training, acceptance, inference, and experiment artifacts
+/runs/
+/outputs/
+/exports/
+/checkpoints/
+wandb/
+tensorboard/
+*.log
+
+# Local model snapshots, prepared datasets, and token/filter caches
+/models/
+/pretrained_models/
+/prepared/
+/otospeech-prepared/
+/token_cache/
+/bridge_cache/
+.cache/
+.filter-cache/
+
+# Local credentials; keep shareable environment templates
+.env
+.env.*
+!.env.example
+!.env.template
+
+# OS and editor temporary files
+.DS_Store
+._*
+Thumbs.db
+*.swp
+*.swo
+*~
