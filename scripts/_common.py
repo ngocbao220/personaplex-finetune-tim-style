@@ -41,11 +41,14 @@ def prepare_fixture(config, output, num_samples=1, sample_index=0, max_steps=Non
     from tim_compat.local_checkpoint import LocalAssets
     values, acceptance = read_config(config)
     output = Path(output).resolve()
-    output.mkdir(parents=True, exist_ok=False)
+    if output.exists():
+        raise FileExistsError(f'use a fresh output directory: {output}')
     rows = [json.loads(x) for x in Path(acceptance['prepared_manifest']).read_text().splitlines() if x.strip()]
     selected = rows[sample_index:sample_index + num_samples]
     if sample_index < 0 or num_samples < 1 or len(selected) != num_samples:
-        raise ValueError('sample selection outside prepared manifest')
+        raise ValueError('sample selection outside prepared manifest: '
+                         f'total={len(rows)}, sample_index={sample_index}, num_samples={num_samples}')
+    output.mkdir(parents=True, exist_ok=False)
     # Preserve prepared-root path resolution; export first, select exported rows.
     exported = prepare_manifest(acceptance['prepared_manifest'], output / 'prepared')
     tim_rows = [json.loads(x) for x in exported.read_text().splitlines() if x.strip()]

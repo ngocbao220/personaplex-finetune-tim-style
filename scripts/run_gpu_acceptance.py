@@ -5,7 +5,8 @@ from _common import parser, prepare_fixture, launch_worker, write_json, compare_
 
 def main():
     p = parser(__doc__)
-    p.add_argument('--num-samples', type=int, default=10)
+    p.add_argument('--num-samples', type=int, default=None,
+                   help='Conversations to select; omitted = 1 for smoke, 10 for full-set')
     p.add_argument('--max-steps', type=int, default=100)
     p.add_argument('--checkpoint-step', type=int)
     p.add_argument('--required-loss-ratio', type=float, default=.8)
@@ -17,11 +18,12 @@ def main():
     smoke_chunks = opts.smoke_chunks if opts.smoke_chunks is not None else acceptance.get('smoke_chunks', 0)
     if isinstance(smoke_chunks, bool) or not isinstance(smoke_chunks, int) or not 0 <= smoke_chunks <= 40:
         p.error('smoke-chunks must be an integer from 0 to 40')
+    num_samples = opts.num_samples if opts.num_samples is not None else (1 if smoke_chunks else 10)
     if supplied.get('batch_size', 1) != 1:
         p.error('fixed-set coverage requires batch_size=1 in supplied config; no silent batch-size override')
     if opts.max_steps < 2 or not 0 < opts.required_loss_ratio < 1:
         p.error('max_steps >=2 and 0 < required_loss_ratio <1 required')
-    config = prepare_fixture(opts.config, opts.output_dir, opts.num_samples, opts.sample_index,
+    config = prepare_fixture(opts.config, opts.output_dir, num_samples, opts.sample_index,
                              opts.max_steps, opts.checkpoint_step)
     out = config.parent
     fixture = json.loads((out / 'fixture.json').read_text())

@@ -12,7 +12,7 @@ Dùng [config.full.yaml](../config.full.yaml), có comment giải thích từng 
 | `--config` | File YAML chứa config Tim và section `acceptance`. |
 | `--sample-index` | Vị trí conversation bắt đầu trong manifest, tính từ 0. |
 | `--output-dir` | Thư mục mới để lưu artifacts và logs. |
-| `--num-samples` | Số conversations liên tiếp dùng cho mini-overfit. |
+| `--num-samples` | Số conversations liên tiếp dùng cho mini-overfit; bỏ qua tham số này thì smoke chọn 1, full-set chọn 10. |
 | `--max-steps` | Số optimizer steps và horizon OneCycle của phase 3. |
 | `--checkpoint-step` | Khoảng cách lưu checkpoint; dùng bằng `--max-steps` để kiểm tra checkpoint cuối. |
 | `--smoke-chunks` | Phase 3: 1–40 chunks hợp lệ cố định cho train/eval/reload; 0=tắt smoke. Ghi đè `acceptance.smoke_chunks` trong YAML. |

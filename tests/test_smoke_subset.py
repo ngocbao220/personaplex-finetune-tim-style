@@ -176,22 +176,42 @@ class SmokeSubsetTest(unittest.TestCase):
         import run_gpu_acceptance
         config = self.output / 'resolved.yaml'
         config.write_text('seed: 0\n')
-        for configured, flag, expected in ((8, None, 8), (8, 0, 0), (8, 4, 4), (0, None, 0)):
+        for configured, flag, expected, requested_samples in (
+                (8, None, 8, None), (8, 0, 0, None),
+                (8, 4, 4, None), (0, None, 0, None), (8, None, 8, 3)):
             with self.subTest(configured=configured, flag=flag):
                 fixture = self.output / 'fixture.json'
                 fixture.write_text(json.dumps(dict(acceptance=dict(smoke_chunks=configured))))
                 argv = ['run_gpu_acceptance', '--config', str(config), '--output-dir', str(self.output)]
                 if flag is not None:
                     argv += ['--smoke-chunks', str(flag)]
+                if requested_samples is not None:
+                    argv += ['--num-samples', str(requested_samples)]
                 with patch.object(sys, 'argv', argv), \
                         patch.object(_common, 'read_config', return_value=({'batch_size': 1}, {'smoke_chunks': configured})), \
-                        patch.object(run_gpu_acceptance, 'prepare_fixture', return_value=config), \
+                        patch.object(run_gpu_acceptance, 'prepare_fixture', return_value=config) as prepare, \
                         patch.object(run_gpu_acceptance, 'launch_worker', side_effect=RuntimeError('worker stopped for CPU test')), \
                         redirect_stdout(io.StringIO()):
                     self.assertTrue(run_gpu_acceptance.main())
+                expected_samples = requested_samples if requested_samples is not None else (1 if expected else 10)
+                self.assertEqual(prepare.call_args.args[2], expected_samples)
                 self.assertEqual(json.loads(fixture.read_text())['acceptance']['smoke_chunks'], expected)
                 report = json.loads((self.output / 'comparison.json').read_text())
                 self.assertEqual(report['coverage'], 'fixed_chunk_smoke' if expected else 'full_selected_conversations')
+
+    def test_outside_manifest_reports_counts_without_creating_run_directory(self):
+        root = Path(__file__).resolve().parents[1]
+        sys.path.insert(0, str(root / 'scripts'))
+        from _common import prepare_fixture
+        manifest = self.output / 'manifest.jsonl'
+        manifest.write_text(json.dumps(dict(sample_id='one', sample_dir='one')) + '\n')
+        config = self.output / 'acceptance.yaml'
+        config.write_text(json.dumps(dict(acceptance=dict(
+            model_root=str(self.output / 'models'), prepared_manifest=str(manifest)))))
+        run = self.output / 'run'
+        with self.assertRaisesRegex(ValueError, 'total=1, sample_index=0, num_samples=10'):
+            prepare_fixture(config, run, num_samples=10)
+        self.assertFalse(run.exists())
 
 
 if __name__ == '__main__':
