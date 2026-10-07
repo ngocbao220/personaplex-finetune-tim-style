@@ -1,67 +1,75 @@
-# Train synthetic tiếng Việt trên server
+# Các lệnh độc lập để train synthetic tiếng Việt
 
-Chạy từ repo đã upload, trong environment Linux/CUDA có Moshi training runtime tương thích Tim. Script dùng interpreter `python` đang active; không cài dependency hoặc tải model. Có thể đặt `PYTHON=/absolute/env/bin/python`.
+Chạy trong environment Linux/CUDA hiện có, với Moshi training runtime tương thích Tim. Không tự tạo environment, cài dependency hay tải model.
 
-## Cấu hình đã điền
+## Config trong project
 
-- Model local: `/home/voice/data/voice/personaplex-7b-v1`.
-- Prepared training: `/home/voice/data/voice/vdt/data_ready/synthetic_500h/train.jsonl`.
-- Export Tim: `/home/voice/data/voice/personaplex-exports/synthetic-vi`.
-- Run: `/home/voice/data/voice/personaplex-runs/synthetic-vi-single-gpu`.
-- `configs/train_single_gpu.yaml`: tiếng Việt có dấu, train/val theo conversation (95%/5%), LoRA rank 64, chunk 10s, batch 1, tích lũy 6 microbatches, 1024 steps, checkpoint mỗi 64 steps. Giữ loss weights của recipe Tim (`4.0`, `0.04`, L2 `0.0001`).
-- `config.full.yaml`: acceptance OtoSpeech, 8 fixed smoke chunks, loss weights acceptance (`50.0`, `0.3`, L2 `0`). Không dùng file này làm native training config.
-- Free-running: baseline step 0 và mỗi 10 optimizer steps; dùng user channel RIGHT của OtoSpeech `conv_0001`, voice prompt của conversation đó và file `system_prompt.txt` trên server. Đây là mẫu probe OtoSpeech khi train synthetic; không phải evaluation synthetic.
+- `configs/train_single_gpu.yaml`: config đầu vào cho prepare, tiếng Việt có dấu, `data.eval_split_from_train: 0.05`, seed 0; LoRA rank 64, chunk 10s, batch 1, tích lũy 6 microbatches, 1024 steps; validation/checkpoint mỗi 64 steps.
+- `configs/train_synthetic.yaml`: config train thực tế, tạo ở đường dẫn chỉ định bởi `--resolved-config` sau prepare; bind train/val manifest đã export. Chỉnh learning rate, duration, run_dir hoặc số steps ở file này trước khi train.
+- `configs/acceptance.yaml`: acceptance OtoSpeech và free-running probe. Đã chuyển từ `config.full.yaml` ở root. Baseline step 0 và mỗi 10 optimizer steps; dùng RIGHT/user của `conv_0001`, voice prompt và file `system_prompt.txt` trên server.
 
-Training lấy voice/text conditioning của từng sample synthetic từ prepared metadata/sidecars. `acceptance.inference` chỉ cấu hình probe sinh tự do. Đường dẫn text prompt đã bỏ dấu chấm cuối `.txt.`; kiểm tra tên file thật trước khi chạy.
+Prepare chỉ ghi manifest, WAV symlinks, JSON sidecars và reports trong export. `--config` chỉ đọc cấu hình; không tự tạo YAML. Muốn xuất config train, phải truyền `--resolved-config` rõ ràng. File đích cần thư mục cha có sẵn và không được tồn tại; không ghi đè config đầu vào.
 
-## Split conversation khi prepare
-
-`data.eval_split_from_train: 0.05` trong `configs/train_single_gpu.yaml` là tỷ lệ conversations giữ cho val; `0` tắt split. Prepare xếp hạng `sample_id` bằng SHA-256 với `seed`, chọn `ceil(N × ratio)` conversations cho val, tối thiểu 1 và tối đa N−1. Cần ít nhất 2 conversations. Membership không phụ thuộc thứ tự manifest, workers hoặc cache; giữ manifest/seed/ratio cho cùng split. Mọi chunk của một conversation chỉ thuộc một tập. Các ID trùng hoặc cùng đường dẫn audio nguồn dưới nhiều ID bị từ chối; dữ liệu đã duplicate thành file riêng cần dedupe ở bước chuẩn bị nguồn.
-
-Export tạo `train.jsonl`, `val.jsonl`, `split.json` (IDs/counts/seed/source manifest hash) và `train.yaml` đã bind cả `data.train_data` và `data.eval_data`. Manifest prepared và audio nguồn không bị sửa. `eval_split_from_train` được bridge loại khỏi YAML native trước khi gọi Tim. Không kết hợp ratio > 0 với `data.eval_data` đã chỉ định. Ratio 0 giữ eval manifest riêng nếu có.
-
-Config synthetic bật `do_eval: true`, `eval_freq: 64`: validation loss mỗi 64 steps và step cuối. Native Tim chỉ đo tối đa 40 batches mỗi lần eval, không quét toàn bộ val lớn. Free-running vẫn dùng probe OtoSpeech đã cấu hình; chưa tự lấy sample synthetic từ val. Acceptance đặt ratio 0 để giữ fixed-set overfit.
-
-Export cũ chưa split phải export lại vào **thư mục mới**; không resume run cũ và gọi nó là run có held-out validation. Ví dụ `EXPORT_DIR=/home/voice/data/voice/personaplex-exports/synthetic-vi-split bash scripts/train_synthetic_server.sh prepare`, rồi dùng cùng `EXPORT_DIR` cho bước train; chọn `run_dir` mới nếu run mặc định đã tồn tại.
-
-## Chạy
-
-Trước khi scale, hoàn tất acceptance single GPU theo `scripts/README.md`; CPU checks không chứng minh overfit hay reload trên GPU.
+## 1. Đặt project
 
 ```bash
-cd /home/voice/code/VDT_02/baottn/personaplex-finetune-tim-style-main-v1
-CUDA_VISIBLE_DEVICES=0 bash scripts/run_all_gpu_checks.sh config.full.yaml
+export PROJECT=/home/voice/code/VDT_02/baottn/personaplex-finetune-tim-style-main-v1
+cd "$PROJECT"
 ```
 
-Acceptance mặc định xuất artifacts trong `runs/` của repo, cần thư mục mới. Có thể dùng `_run_all.py --runs-dir /absolute/new/acceptance-run` để đặt output ngoài repo.
+## 2. Acceptance trước khi scale
 
-Sau khi acceptance đạt, export và train synthetic bằng hai bước để đọc báo cáo dữ liệu trước:
+Mỗi command dùng output mới; xem `scripts/README.md` để đọc kết quả từng phase.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/train_synthetic_server.sh prepare
-CUDA_VISIBLE_DEVICES=0 bash scripts/train_synthetic_server.sh train
+CUDA_VISIBLE_DEVICES=0 python scripts/_run_all.py \
+  --config "$PROJECT/configs/acceptance.yaml" \
+  --runs-dir /home/voice/data/voice/personaplex-runs/acceptance-checks
 ```
 
-Hoặc `bash scripts/train_synthetic_server.sh all` chạy tuần tự cả hai bước. Export đòi hỏi thư mục đích mới; không chạy `all` lại khi export đã tồn tại. Script ghi `train.log` cạnh manifest export và giữ exit code lỗi của trainer dù dùng `tee`.
+## 3. Prepare synthetic và chia train/val
 
 ```bash
-tail -f /home/voice/data/voice/personaplex-exports/synthetic-vi/train.log
+python "$PROJECT/prepare_data.py" \
+  --manifest /home/voice/data/voice/vdt/data_ready/synthetic_500h/train.jsonl \
+  --output /home/voice/data/voice/personaplex-exports/synthetic-vi-split \
+  --config "$PROJECT/configs/train_single_gpu.yaml" \
+  --resolved-config "$PROJECT/configs/train_synthetic.yaml" \
+  --workers 8
+```
+
+Prepared synthetic phải có stereo 24 kHz LEFT=agent/RIGHT=user, words aligned, metadata channel mapping, agent voice mono và text prompt. Export không alignment, chọn voice region hay sửa transcript. Workers là tiến trình CPU validation; `0` xử lý tuần tự.
+
+Split theo conversation trước chunking: chọn `ceil(N × ratio)` sample IDs bằng thứ hạng SHA-256 với seed, tối thiểu 1 và tối đa N−1. Tỷ lệ `0` không tạo val; ratio > 0 cần ít nhất 2 conversations và không kết hợp `data.eval_data` đã chỉ định. Mọi chunk của một conversation chỉ thuộc một tập. Kết quả không phụ thuộc thứ tự manifest, workers hoặc cache. ID trùng hoặc nhiều ID trỏ cùng audio nguồn bị từ chối; file audio duplicate thành đường dẫn khác cần dedupe ở bước nguồn.
+
+Output gồm `train.jsonl`, `val.jsonl`, `split.json` (IDs/counts/seed/source manifest hash), các sidecars và báo cáo nguồn. Giữ nguyên dữ liệu prepared. Không có `train.yaml` trong export. Export cũ chưa split cần thư mục export mới.
+
+## 4. Kiểm tra config và train
+
+Kiểm tra `configs/train_synthetic.yaml`: `train_data`, `eval_data`, `run_dir`, `do_eval`, `eval_freq`. Nếu run mặc định đã tồn tại, chọn run_dir mới; không resume run đã train trên toàn dataset rồi coi val là held-out.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m torch.distributed.run --standalone --nproc-per-node=1 \
+  "$PROJECT/train_local.py" \
+  --model-root /home/voice/data/voice/personaplex-7b-v1 \
+  --config "$PROJECT/configs/train_synthetic.yaml" \
+  --free-running-config "$PROJECT/configs/acceptance.yaml" \
+  --token-cache /home/voice/data/voice/personaplex-exports/synthetic-vi-split/token_cache
+```
+
+Lệnh này tương đương `torchrun`, dùng cùng interpreter active với prepare. Bỏ `--token-cache` nếu không cần cache. Bỏ `--free-running-config` nếu không chạy periodic generation; hoặc đặt `acceptance.inference.free_running_every_steps: 0` để tắt.
+
+Training lấy conditioning từ từng sample synthetic. Free-running vẫn là probe OtoSpeech `conv_0001` ở cửa sổ 0–10s; không tự chọn sample synthetic từ val. Kiểm tra voice prompt, conversation và đường dẫn text prompt thực tế (`system_prompt.txt`, không có dấu chấm cuối `.txt.`).
+
+## 5. Đọc kết quả và resume
+
+```bash
 tail -f /home/voice/data/voice/personaplex-runs/synthetic-vi-single-gpu/metrics.train.jsonl
+tail -f /home/voice/data/voice/personaplex-runs/synthetic-vi-single-gpu/metrics.eval.jsonl
 ```
 
-Checkpoint: `<run_dir>/checkpoints/checkpoint_000064/consolidated/`. Free-running: `<run_dir>/free_running/step_000010/` và `step_000010.log`. Free-running tạm dừng training, offload sang CPU và chạy inference subprocess; cần đủ CPU RAM/disk. Hook offload/restore chưa có bằng chứng chạy model thật trên GPU trong lần cập nhật này. Lỗi inference dừng training; đọc file log theo step. Đặt `acceptance.inference.free_running_every_steps: 0` trong `config.full.yaml` để tắt.
+Các đường dẫn trên theo run_dir mặc định; đổi tương ứng nếu bạn chỉnh config. Checkpoint ở `<run_dir>/checkpoints/checkpoint_000064/consolidated/`. Free-running ở `<run_dir>/free_running/step_000010/` và `step_000010.log`: nghe `current/agent.wav` hoặc `dialogue_step.wav`, đọc `current/agent.txt`.
 
-## Thay đổi hoặc resume
+Resume bằng cách thêm `--resume-from /absolute/run/checkpoints/checkpoint_000064` vào lệnh train; giữ horizon/config tương ứng. Periodic inference yêu cầu output step chưa tồn tại.
 
-Sửa `configs/train_single_gpu.yaml` trước khi export; file `<EXPORT_DIR>/train.yaml` là bản cấu hình trainer thực sự sử dụng. Muốn đổi cấu hình sau export, sửa bản derived đó hoặc export mới. Muốn đổi text mode, export mới với mode khớp cả training và inference.
-
-Script hỗ trợ `MODEL_ROOT`, `PREPARED_MANIFEST`, `EXPORT_DIR`, `TRAIN_CONFIG`, `FREE_RUNNING_CONFIG`, `EXPORT_WORKERS` và `RESUME_FROM` qua environment. Đổi `EXPORT_DIR` chỉ đổi output export, không đổi `run_dir`: chỉnh YAML nếu cần run mới. Không ghi đè run cũ.
-
-```bash
-RESUME_FROM=/home/voice/data/voice/personaplex-runs/synthetic-vi-single-gpu/checkpoints/checkpoint_000064 \
-  CUDA_VISIBLE_DEVICES=0 bash scripts/train_synthetic_server.sh train
-```
-
-Giữ horizon/config và checkpoint tương ứng; periodic inference cũng cần output step chưa tồn tại. Không xóa artifacts để né lỗi directory trùng; chọn run mới hoặc xử lý resume theo trainer hiện có.
-
-Prepared synthetic phải có cùng contract bridge: stereo 24 kHz LEFT=agent/RIGHT=user, words aligned, metadata channel mapping, agent voice mono và text prompt. Export không alignment, chọn voice region hay sửa transcript. Nếu prompt/crop không vừa chunk 10s, xem diagnostics rồi tăng duration phù hợp; không kết luận dữ liệu server hợp lệ trước khi export thực tế.
+Validation Tim hiện chỉ đo tối đa 40 batches mỗi lần, không quét toàn bộ tập val lớn. Free-running tạm dừng training, offload sang CPU và chạy inference subprocess; cần CPU RAM/disk phù hợp. Lỗi inference dừng training. Chưa xác minh CUDA/offload/restore với model thật trong lần cập nhật này. Prompt/crop phải vừa chunk 10s; nếu không, xem diagnostics rồi tăng duration phù hợp.

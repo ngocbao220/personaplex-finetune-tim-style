@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository adapts Tim’s PersonaPlex LoRA trainer for prepared OtoSpeech conversations. Add local integration logic in `tim_compat/`; root entrypoints include `prepare_data.py`, `train_local.py`, and optional `train_hydra.py`. GPU validation and inference tools live in `scripts/`, CPU regressions in `tests/`, and workflow documentation in `docs/`. `config.full.yaml` configures the acceptance harness; `configs/` contains reference recipes.
+This repository adapts Tim’s PersonaPlex LoRA trainer for prepared OtoSpeech conversations. Add local integration logic in `tim_compat/`; root entrypoints include `prepare_data.py`, `train_local.py`, and optional `train_hydra.py`. GPU validation and inference tools live in `scripts/`, CPU regressions in `tests/`, and workflow documentation in `docs/`. `configs/acceptance.yaml` configures the acceptance harness; `configs/` contains reference recipes.
 
 `moshi-finetune/`, `personaplex/`, and inventoried upstream utilities are preserved references. Check `reference_files.sha256.json` before editing them; extend bridges instead of rewriting frozen sources. Keep datasets, model snapshots, and run artifacts outside the source tree.
 
@@ -13,7 +13,7 @@ Run commands from the repository root using an existing compatible environment (
 - `python3 -m unittest discover -s tests -v`: run CPU contract and regression tests.
 - `python3 tests/test_reference_integrity.py`: verify preserved source hashes.
 - `python prepare_data.py --manifest /absolute/prepared/manifest.jsonl --output /absolute/exports/tim-prepared`: validate/export prepared data for Tim.
-- `CUDA_VISIBLE_DEVICES=0 python scripts/_run_all.py --config config.full.yaml --runs-dir /absolute/runs/new_checks`: run ordered GPU checks after configuring local assets. Use a fresh output directory.
+- `CUDA_VISIBLE_DEVICES=0 python scripts/_run_all.py --config configs/acceptance.yaml --runs-dir /absolute/runs/new_checks`: run ordered GPU checks after configuring local assets. Use a fresh output directory.
 
 ## Coding Style & Naming Conventions
 

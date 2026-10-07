@@ -10,7 +10,7 @@ Thay bằng đường dẫn tuyệt đối trên server:
 
 ```bash
 export PROJECT=/absolute/path/personaplex-finetune-tim-style
-export CONFIG="$PROJECT/config.full.yaml"
+export CONFIG="$PROJECT/configs/acceptance.yaml"
 export RUNS=/absolute/runs/verification_01
 cd "$PROJECT"
 ```

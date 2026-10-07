@@ -14,7 +14,9 @@ def main():
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--config", type=Path,
-                        help="Reference YAML; bind exported train/val manifests using data.eval_split_from_train")
+                        help="Read text mode, seed and data.eval_split_from_train from this YAML")
+    parser.add_argument("--resolved-config", type=Path,
+                        help="Explicit output YAML with exported train/val paths; requires --config; never overwritten")
     parser.add_argument("--workers", type=int, default=0,
                         help="Spawn validation workers; default uses serial reference bridge")
     parser.add_argument("--cache-dir", type=Path,
@@ -22,6 +24,13 @@ def main():
     parser.add_argument('--vietnamese-text-mode', choices=('diacritics', 'no_diacritics', 'telex'),
                         help='Agent target representation; defaults to data.vietnamese_text_mode in --config')
     args = parser.parse_args()
+    if args.resolved_config is not None:
+        if args.config is None:
+            parser.error('--resolved-config requires --config')
+        if args.resolved_config.exists():
+            parser.error(f'resolved config already exists: {args.resolved_config}')
+        if not args.resolved_config.parent.is_dir():
+            parser.error(f'resolved config directory does not exist: {args.resolved_config.parent}')
     from tim_compat.text_normalization import text_mode_from_config
     values = yaml.safe_load(args.config.read_text()) if args.config else {}
     mode = args.vietnamese_text_mode or text_mode_from_config(values)
@@ -35,9 +44,11 @@ def main():
                               eval_split_from_train=ratio, seed=values.get('seed', 0))
     print(f"Vietnamese text mode: {mode}")
     print(f"Set original Tim config data.train_data to: {result}")
+    if ratio:
+        print(f"Set original Tim config data.eval_data to: {result.parent / 'val.jsonl'}")
     print("Enable system_prompt.enable to use the prepared voice/text conditioning.")
-    if args.config is not None:
-        config = bind_training_manifest(args.config, result, args.output / 'train.yaml',
+    if args.resolved_config is not None:
+        config = bind_training_manifest(args.config, result, args.resolved_config,
                                        eval_manifest=result.parent / 'val.jsonl' if ratio else None)
         print(f"Derived reference config: {config.resolve()}")
 

@@ -4,7 +4,7 @@ Chạy các lệnh từ thư mục `personaplex-finetune-tim-style/`, dùng conf
 
 ## Config và tham số
 
-Dùng [config.full.yaml](../config.full.yaml), có comment giải thích từng tham số. Config mặc định đã điền đường dẫn server OtoSpeech/model/probe; kiểm tra các file này tồn tại trước khi chạy. Full training synthetic dùng [train_synthetic_server.sh](train_synthetic_server.sh), xem [hướng dẫn server](../docs/train_synthetic_server.md). File này dành cho acceptance harness, không chạy trực tiếp bằng trainer.
+Dùng [acceptance.yaml](../configs/acceptance.yaml), có comment giải thích từng tham số. Config mặc định đã điền đường dẫn server OtoSpeech/model/probe; kiểm tra các file này tồn tại trước khi chạy. Full training synthetic dùng các lệnh độc lập, xem [hướng dẫn server](../docs/train_synthetic_server.md). File này dành cho acceptance harness, không chạy trực tiếp bằng trainer.
 
 | Tham số lệnh | Ý nghĩa |
 |---|---|
@@ -35,7 +35,7 @@ Nếu prompt chiếm nhiều frame, đặt `system_prompt.prompt_budget_frames` 
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/check_interleaver_parity.py \
-  --config config.full.yaml \
+  --config configs/acceptance.yaml \
   --sample-index 0 \
   --output-dir runs/parity/interleaver
 ```
@@ -46,7 +46,7 @@ So sánh loss, LoRA parameters, optimizer và scheduler sau một step giữa tr
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/check_one_step_parity.py \
-  --config config.full.yaml \
+  --config configs/acceptance.yaml \
   --sample-index 0 \
   --output-dir runs/parity/one_step
 ```
@@ -57,7 +57,7 @@ Config cần `batch_size: 1`. Với conversation dài khoảng 900 giây, dùng 
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/run_gpu_acceptance.py \
-  --config config.full.yaml \
+  --config configs/acceptance.yaml \
   --num-samples 1 \
   --smoke-chunks 8 \
   --max-steps 100 \
@@ -70,14 +70,14 @@ Script lấy tối đa 8 chunks hợp lệ đầu tiên trong conversations đã
 
 Artifacts trong `bridge/`: `smoke_selection.json` ghi sample IDs, offsets, số chunk đã xét/loại và snapshot SHA-256; `smoke_samples.pt` chứa native Samples CPU; `smoke_rejections.jsonl` ghi lý do loại. `baseline.json`, `final_eval.json`, `pre_save.json`, `reload.json` ghi cùng hash và số batches. `comparison.json` có `coverage: fixed_chunk_smoke`: PASS chỉ áp dụng tập nhỏ đã chọn, **không chứng minh coverage toàn bộ conversations**.
 
-`config.full.yaml` đặt `acceptance.smoke_chunks: 8`; CLI có thể đổi số lượng. `--smoke-chunks 0` giữ đường full-set cũ và vẫn dừng nếu hơn 40 eval batches. One-step parity không bị chuyển sang smoke subset. Không tự giảm số optimizer steps hoặc thay objective; `--max-steps` vẫn điều khiển horizon OneCycle. Smoke này kiểm tra teacher-forced train/save/reload, không thay native generation.
+`configs/acceptance.yaml` đặt `acceptance.smoke_chunks: 8`; CLI có thể đổi số lượng. `--smoke-chunks 0` giữ đường full-set cũ và vẫn dừng nếu hơn 40 eval batches. One-step parity không bị chuyển sang smoke subset. Không tự giảm số optimizer steps hoặc thay objective; `--max-steps` vẫn điều khiển horizon OneCycle. Smoke này kiểm tra teacher-forced train/save/reload, không thay native generation.
 
 ## 4. Chạy toàn bộ
 
 Chạy tuần tự các kiểm tra trên và free-running nếu có `acceptance.inference`, dừng khi có lỗi và ghi `runs/gpu_acceptance_report.json`.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/run_all_gpu_checks.sh config.full.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/run_all_gpu_checks.sh configs/acceptance.yaml
 ```
 
 ## 5. Free-running inference và lưu kết quả
@@ -99,13 +99,13 @@ Dialogue WAV dùng 24 kHz; stereo giữ thứ tự kênh nguồn theo `user_chan
 
 Đặt `acceptance.inference.free_running_every_steps: 20` để evaluation trước train (step 0) và sau optimizer steps 20, 40, ...; `0` tắt hook. Mini-overfit route `bridge` tự nhận cấu hình này; one-step parity và checkpoint reload không chạy hook. Không tự thêm evaluation cuối nếu step cuối không chia hết cho N. Khi resume, evaluation đầu tiên dùng trạng thái resume và tạo baseline base model cho session mới, không giả nhãn step 0.
 
-Với launcher trực tiếp, truyền thêm `--free-running-config /absolute/path/config.full.yaml` vào `train_local.py`; `--config` vẫn là native training YAML đã materialize, không chứa `acceptance`. Kết quả nằm ở `<run_dir>/free_running/step_000000/`, `step_000020/`, ... mỗi thư mục có ba dialogue WAV và manifest. Adapter snapshots độc lập nằm ở `adapter_000000/`, ... không thay checkpoint/resume của trainer. Step manifest lấy optimizer step thực tế, không lấy nhãn `inference.step`.
+Với launcher trực tiếp, truyền thêm `--free-running-config /absolute/path/configs/acceptance.yaml` vào `train_local.py`; `--config` vẫn là native training YAML đã materialize, không chứa `acceptance`. Kết quả nằm ở `<run_dir>/free_running/step_000000/`, `step_000020/`, ... mỗi thư mục có ba dialogue WAV và manifest. Adapter snapshots độc lập nằm ở `adapter_000000/`, ... không thay checkpoint/resume của trainer. Step manifest lấy optimizer step thực tế, không lấy nhãn `inference.step`.
 
 Baseline base model chỉ sinh một lần; các step sau tái sử dụng và kiểm tra input hashes, prompts, seed cùng sampling settings. Training **tạm dừng đồng bộ** để inference: tensor storage của model/Mimi, gradients, FP32 master parameters và optimizer được offload CPU rồi restore trong `finally`; Parameter identities và RNG được giữ. Cần đủ CPU RAM cho training state cộng native inference model; mỗi mốc vẫn tốn thời gian merge/load 7B và dung lượng merged checkpoint. Chỉ hỗ trợ single GPU, LoRA, `do_ckpt: true`, `gen_eval.enable: false`; lỗi inference làm training fail-fast. Hook và offload/restore chưa được kiểm chứng trên GPU thật.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python scripts/run_free_running_inference.py \
-  --config config.full.yaml \
+  --config configs/acceptance.yaml \
   --checkpoint runs/gpu_acceptance/tim_run/checkpoints/checkpoint_000100/consolidated \
   --output-dir runs/free_running
 ```

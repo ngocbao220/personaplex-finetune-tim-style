@@ -1,5 +1,5 @@
 # Native Tim training config for Vietnamese synthetic prepared data on the server.
-# Run scripts/train_synthetic_server.sh to export prepared sources before training.
+# Run prepare_data.py with --resolved-config configs/train_synthetic.yaml; see docs/train_synthetic_server.md.
 # Original loss/LoRA/optimizer recipe with smaller chunks and batches.
 # Conversation train/val split during prepare; no acceptance smoke subset or 8-chunk cap.
 # Native validation is capped at 40 batches; gen_eval/API and WandB disabled.

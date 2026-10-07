@@ -90,15 +90,20 @@ class ConversationSplitTest(unittest.TestCase):
             with native_training_config(config):
                 pass
         output = self.root / 'cli'
+        config_dir = self.root / 'configs'
+        config_dir.mkdir()
+        resolved = config_dir / 'train_synthetic.yaml'
         result = subprocess.run([sys.executable, str(project / 'prepare_data.py'),
-            '--manifest', str(self.manifest), '--output', str(output), '--config', str(config)],
+            '--manifest', str(self.manifest), '--output', str(output), '--config', str(config),
+            '--resolved-config', str(resolved)],
             text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        derived = yaml.safe_load((output / 'train.yaml').read_text())
+        derived = yaml.safe_load(resolved.read_text())
         self.assertEqual(derived['data']['eval_data'], str(output / 'val.jsonl'))
         self.assertEqual(derived['data']['train_data'], str(output / 'train.jsonl'))
         self.assertEqual(config.read_bytes(), before)
-        with native_training_config(output / 'train.yaml') as native:
+        self.assertFalse((output / 'train.yaml').exists())
+        with native_training_config(resolved) as native:
             self.assertNotIn('eval_split_from_train', yaml.safe_load(native.read_text())['data'])
         values['data']['eval_data'] = '/existing/val.jsonl'
         config.write_text(yaml.safe_dump(values))
@@ -122,6 +127,29 @@ class ConversationSplitTest(unittest.TestCase):
         config.write_text(yaml.safe_dump(values))
         with self.assertRaisesRegex(ValueError, 'fixed-set'):
             read_config(config)
+
+    def test_prepare_without_resolved_config_writes_only_data_and_preserves_config(self):
+        project = Path(__file__).resolve().parents[1]
+        config = self.root / 'config.yaml'
+        config.write_text(yaml.safe_dump({'data': {'eval_split_from_train': .2}}))
+        before = config.read_bytes()
+        output = self.root / 'data-only'
+        command = [sys.executable, str(project / 'prepare_data.py'),
+                   '--manifest', str(self.manifest), '--output', str(output),
+                   '--config', str(config)]
+        result = subprocess.run(command, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(list(output.glob('*.yaml')))
+        self.assertTrue((output / 'val.jsonl').is_file())
+        self.assertEqual(config.read_bytes(), before)
+        blocked = self.root / 'blocked-export'
+        command[command.index('--output') + 1] = str(blocked)
+        result = subprocess.run(command + ['--resolved-config', str(config)],
+                                text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('already exists', result.stderr)
+        self.assertFalse(blocked.exists())
+        self.assertEqual(config.read_bytes(), before)
 
     def test_zero_preserves_unsplit_export(self):
         output = self.root / 'unsplit'

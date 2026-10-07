@@ -89,12 +89,14 @@ class PreparedDataTest(unittest.TestCase):
             'train_data':'/unused.jsonl','eval_data':''}, 'run_dir':'/unused-run'}))
         before = config.read_bytes()
         output = self.base / 'cli-export'
+        derived = self.base / 'derived-train.yaml'
         project = Path(__file__).resolve().parents[1]
         result = subprocess.run([sys.executable, str(project / 'prepare_data.py'),
-            '--manifest',str(self.manifest),'--output',str(output),'--config',str(config)],
+            '--manifest',str(self.manifest),'--output',str(output),'--config',str(config),
+            '--resolved-config',str(derived)],
             capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        derived = output / 'train.yaml'
+        self.assertFalse((output / 'train.yaml').exists())
         self.assertEqual(yaml.safe_load(derived.read_text())['data']['vietnamese_text_mode'], 'telex')
         with native_training_config(derived) as native:
             self.assertNotIn('vietnamese_text_mode', yaml.safe_load(native.read_text())['data'])
