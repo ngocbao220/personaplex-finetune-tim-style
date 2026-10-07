@@ -41,7 +41,8 @@ def prepare_manifest(manifest, output=None, *, enabled=True, workers=0, cache_di
     """Materialize ordered Tim sidecars, without changing any source or sequence.
 
     Disabled mode returns the exact original manifest path without reading it.
-    Enabled mode requires a fresh output directory; invalid input produces no output.
+    Enabled mode requires a fresh output directory; unlocatable alignment or asset errors produce no output.
+    Finite out-of-bounds words are quarantined for pre-tokenization chunk gating.
     Prompt construction, crop/delay and loss masks remain the Tim tokenizer's job.
     """
     if not enabled:
@@ -102,17 +103,23 @@ def prepare_manifest(manifest, output=None, *, enabled=True, workers=0, cache_di
             _publish_cache(cache, fingerprint, samples)
     output.mkdir(parents=True)
     records = []
+    rejections = []
     for sample_id, audio, voice, duration, sidecar in samples:
         # Cache stores raw prepared text; apply each mode exactly once on export.
         sidecar = dict(sidecar, vietnamese_text_mode=vietnamese_text_mode,
             alignments=[[normalize_vietnamese_text(text, vietnamese_text_mode)
                          if speaker == 'SPEAKER_BROKER' else text, timestamps, speaker]
                         for text, timestamps, speaker in sidecar['alignments']])
+        rejections.extend(dict(sample_id=sample_id, stage='prepared_source',
+            audio_duration_sec=duration, **error) for error in sidecar['source_alignment_errors'])
         wav_path = output / f"{sample_id}.wav"
         wav_path.symlink_to(audio)
         wav_path.with_suffix(".json").write_text(json.dumps(sidecar, ensure_ascii=False) + "\n")
         records.append(json.dumps({"path": str(wav_path), "duration": duration,
                                    "vietnamese_text_mode": vietnamese_text_mode}))
+    (output / 'source_rejections.jsonl').write_text(''.join(
+        json.dumps(row, ensure_ascii=False) + '\n' for row in rejections))
+    print(f'Source alignment quarantine: {len(rejections)} words; report={output / "source_rejections.jsonl"}')
     result = output / "train.jsonl"
     result.write_text("\n".join(records) + "\n")
     print(f"Prepared adapter: {len(samples)} samples; LEFT=agent, RIGHT=user; first={samples[0][0]}")
@@ -123,7 +130,7 @@ def _fingerprint(root, manifest):
     """Conservative content hash: invalidate on any source-root file change."""
     import hashlib
 
-    digest = hashlib.sha256(b"tim-prepared-export-v2\0")
+    digest = hashlib.sha256(b"tim-prepared-export-v3-source-quarantine\0")
     digest.update(str(root).encode())
     digest.update(str(manifest).encode() + b"\0")
     for path in sorted(root.rglob("*")):
@@ -195,26 +202,33 @@ def _prepare_row(item):
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError(f"missing prepared text prompt: {sample_id}")
     alignments = []
+    source_errors = []
     last_start = -1
     labels = {"agent": "SPEAKER_BROKER", "user": "SPEAKER_CLIENT"}
     if not isinstance(words, list) or not words:
         raise ValueError(f"empty/non-list words: {sample_id}")
     for index, word in enumerate(words):
+        if not isinstance(word, dict):
+            raise PreparedAlignmentError(sample_id, index, word, duration, 'invalid_alignment')
         try:
             start, end = float(word["start"]), float(word["end"])
         except (KeyError, TypeError, ValueError) as error:
             raise PreparedAlignmentError(sample_id, index, word, duration, 'invalid_timestamp') from error
         if not all(map(math.isfinite, (start, end))):
             raise PreparedAlignmentError(sample_id, index, word, duration, 'invalid_timestamp')
-        if not 0 <= start < end <= duration:
-            raise PreparedAlignmentError(sample_id, index, word, duration, 'timestamp_out_of_bounds')
-        text = word["word"]
+        text = word.get("word")
         if (start < last_start or
-                not isinstance(text, str) or not text.strip() or word["speaker"] not in labels):
+                not isinstance(text, str) or not text.strip() or word.get("speaker") not in labels):
             raise PreparedAlignmentError(sample_id, index, word, duration, 'invalid_alignment')
-        alignments.append([text, [start, end], labels[word["speaker"]]])
         last_start = start
+        if not 0 <= start < end <= duration:
+            source_errors.append(dict(reason='timestamp_out_of_bounds', word_index=index,
+                word=dict(word)))
+            continue
+        alignments.append([text, [start, end], labels[word["speaker"]]])
     return (sample_id, audio, voice, duration, {
         "alignments": alignments, "text_prompt": prompt,
+        "sample_id": sample_id, "audio_duration_sec": duration,
+        "source_alignment_errors": source_errors,
         "voice_prompt": str(voice),
     })

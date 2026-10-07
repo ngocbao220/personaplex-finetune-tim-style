@@ -306,8 +306,6 @@ class SourceAlignmentReportTest(unittest.TestCase):
                 model_root=str(root / 'no-model-required'), prepared_manifest=str(manifest)))))
             words_path = directory / 'words.json'
             for index, (start, end, reason) in enumerate((
-                (-.1, .4, 'timestamp_out_of_bounds'),
-                (.1, 2, 'timestamp_out_of_bounds'),
                 (float('nan'), .4, 'invalid_timestamp'),
                 (.1, float('inf'), 'invalid_timestamp'),
                 ('bad', .4, 'invalid_timestamp'),

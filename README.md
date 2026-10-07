@@ -175,7 +175,13 @@ Inference dùng cùng key. Checkpoint mới ghi mode trong `config.json`; config
 
 ## 5. Filter invalid data
 
-**Đã có filter, nhưng mặc định không bật.** Nó kiểm tra actual Tim `Sample` sau tokenize/crop/prompt/injection, không tái tạo sequence và không thay nội dung sample hợp lệ.
+**Gate alignment nguồn luôn bật ở local bridge và acceptance.** Export giữ conversation có timestamp out-of-bound hữu hạn, ghi word lỗi vào `prepared/source_rejections.jsonl` và metadata sidecar, không sửa prepared sources. Những word đó không đi vào tokenizer; mọi chunk giao với khoảng lỗi bị bỏ trước khi Mimi/tokenizer chạy. Word hoàn toàn trước/sau WAV làm loại chunk đầu/cuối tương ứng. Các chunk tốt vẫn dùng được; không áp dụng tolerance 50 ms của code cũ.
+
+Parity giữ `sample-index` theo conversation nguồn và chọn chunk hợp lệ đầu tiên trong conversation đó. Xem `rejections.jsonl` của parity; train ghi `<run_dir>/source_chunk_rejections-rank-0.jsonl` khi có rejection, append khi resume. Smoke cũng đi qua gate này trước khi đóng băng Samples. Export cache đã đổi phiên bản để lưu diagnostics mới; dùng output directory mới và export lại dữ liệu cũ để có metadata lỗi nguồn.
+
+Timestamp thiếu/NaN/Inf, thứ tự words sai, thiếu file, sai channel hoặc cấu hình vẫn fail-fast. Nếu parity không còn chunk tốt thì FAIL; loader finite không có chunk tốt cũng báo lỗi, train dừng sau 1.000 rejection liên tiếp. Khi export chứa lỗi đã quarantine, phải train qua `train_local.py`; trainer frozen chạy trực tiếp không có gate này.
+
+**Filter token bounds/retained-Sample dưới đây vẫn là tùy chọn, mặc định không bật trong train thường.** Nó kiểm tra actual Tim `Sample` sau tokenize/crop/prompt/injection, không tái tạo sequence và không thay nội dung sample hợp lệ.
 
 | Kiểm tra | Lý do loại |
 |---|---|

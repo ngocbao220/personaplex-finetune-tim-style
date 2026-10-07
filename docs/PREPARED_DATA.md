@@ -33,14 +33,20 @@ For multi-rank launches, generate the config once with the CPU export command, t
 Each JSONL row has `sample_id` and `sample_dir`, or explicit root-confined `audio_path`, `words_path`, `metadata_path`, `voice_prompt_left` and optional `text_prompt_path`. Defaults under the sample directory:
 
 - `conversation.wav`: two-channel 24kHz PCM, LEFT=agent, RIGHT=user.
-- `words.json`: ordered list of `word`, `start`, `end`, `speaker` (`agent`/`user`). Overlap is allowed; decreasing start times, nonfinite/out-of-bounds/zero durations and unknown speakers are rejected, not repaired.
+- `words.json`: ordered list of `word`, `start`, `end`, `speaker` (`agent`/`user`). Overlap is allowed; decreasing start times, nonfinite timestamps and unknown speakers fail validation. Finite out-of-bounds or nonpositive word intervals are quarantined in sidecar metadata and `source_rejections.jsonl`; affected chunks are skipped before tokenization by the local/acceptance bridges, not repaired.
 - `metadata.json`: explicit `agent_channel: left`, `user_channel: right`, prepared top-level `text_prompt_left`. If absent or null, use legacy `text_prompt`; if that is also absent or null, read existing `prompt.txt`. A non-null prompt must be a nonempty string; invalid values are rejected rather than bypassed. Exported Tim sidecars still use `text_prompt`. Export cache version is bumped to invalidate entries created with the old field selection.
 - `voice_prompt_left.wav`: mono 24kHz prepared agent voice; legacy `voice_prompt.wav` filename is supported. No region selection or synthesis.
 
-Agent/user labels map to Tim's `SPEAKER_BROKER`/`SPEAKER_CLIENT`. Words and prompt content retain their original order/text. Conversation WAVs are symlinked without rewriting channels or source files. Tim's unchanged `InterleavedTokenizer.__call__()` reads adjacent JSON and builds hybrid prompt/codes/masks itself.
+Agent/user labels map to Tim's `SPEAKER_BROKER`/`SPEAKER_CLIENT`. Prepared source words/prompts remain unchanged. Exported valid alignments retain timestamps/order, with configured Vietnamese agent text normalization. Quarantined words remain verbatim in diagnostics; they are excluded from tokenizer alignments. Conversation WAVs are symlinked without rewriting channels or source files. Tim's unchanged `InterleavedTokenizer.__call__()` reads adjacent JSON and builds hybrid prompt/codes/masks itself.
 
 ## Disable-to-reference gate
 
 `prepare_manifest(reference_manifest, enabled=False)` returns the original path without validation, filesystem writes or conversion. Tests verify original Tim manifest bytes, enabled alignment/prompt/audio parity, ordering, legacy filename support, invalid-input rejection and root confinement. A CPU test executes the frozen Tim `Interleaver.prepare_item()` on independently specified reference alignments versus exported alignments and compares tensors.
 
 The real local ten-conversation manifest validated and exported successfully into a temporary directory. Full `InterleavedTokenizer` prompt/Mimi/codes/masks, model forward/loss/update parity is still pending; the reference hardcodes CUDA in its tokenizer. No GPU acceptance is claimed.
+
+## Source chunk gate
+
+Use `train_local.py` for exports containing quarantined source words. Its dataset bridge removes affected windows before Mimi/tokenization and before batching. Parity applies the same decision directly to native audio windows; smoke and both one-step routes use the shared gate. Half-open overlap uses the actual unpadded audio window; words entirely outside the WAV reject its adjacent first/last chunk. Conversation IDs and source manifest indices remain unchanged.
+
+Exports include source diagnostics even on cache hits; the cache version changed. Source files are never clamped or rewritten. A fully rejected finite dataset raises an error, and infinite training is bounded at 1,000 consecutive source rejections. GPU behavior must still be verified with fresh server artifacts.

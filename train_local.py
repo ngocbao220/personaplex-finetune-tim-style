@@ -66,6 +66,11 @@ def main(argv=None):
         spec.loader.exec_module(module)
         from finetune.checkpointing import Checkpointer
         stack.enter_context(checkpoint_text_mode(Checkpointer, text_mode))
+        from finetune.data import data_loader
+        from tim_compat.source_chunks import source_chunk_loader
+        native_values = yaml.safe_load(config.read_text())
+        source_report = Path(native_values['run_dir']) / f"source_chunk_rejections-rank-{os.environ.get('RANK', '0')}.jsonl"
+        stack.enter_context(source_chunk_loader(data_loader, report_path=source_report))
         if args.free_running_config is not None:
             import yaml
             from tim_compat.free_running import periodic_free_running

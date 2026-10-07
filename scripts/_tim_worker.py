@@ -220,6 +220,10 @@ def main():
     from contextlib import ExitStack
     with ExitStack() as stack:
         if opts.route == 'original':
+            from finetune.data import data_loader
+            from tim_compat.source_chunks import source_chunk_loader
+            stack.enter_context(source_chunk_loader(data_loader,
+                report_path=artifacts / 'source_chunk_rejections.jsonl'))
             # Independent native discovery with explicit paths; no LocalCheckpointInfo.
             # Offline native loader failure is a prerequisite failure, never a fallback.
             spec = importlib.util.spec_from_file_location('acceptance_original_tim', source)

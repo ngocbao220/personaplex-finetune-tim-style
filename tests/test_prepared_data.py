@@ -100,6 +100,50 @@ class PreparedDataTest(unittest.TestCase):
             self.assertNotIn('vietnamese_text_mode', yaml.safe_load(native.read_text())['data'])
         self.assertEqual(config.read_bytes(), before)
 
+    def test_out_of_bounds_quarantine_preserves_conversation_and_cache(self):
+        words = [{'word':'tiếng','start':.1,'end':.4,'speaker':'agent'},
+                 {'word':'mà','start':.8,'end':1.2,'speaker':'user'}]
+        source = json.dumps(words, ensure_ascii=False).encode()
+        (self.directory / 'words.json').write_bytes(source)
+        exports = []
+        for index, workers in enumerate((0, 2, 0)):
+            result = prepare_manifest(self.manifest, self.base / f'quarantine-{index}',
+                workers=workers, cache_dir=(self.base / 'cache') if workers == 0 else None,
+                vietnamese_text_mode='telex')
+            row = json.loads(result.read_text())
+            sidecar = json.loads(Path(row['path']).with_suffix('.json').read_text())
+            self.assertEqual(sidecar['alignments'], [['tieengs',[.1,.4],'SPEAKER_BROKER']])
+            self.assertEqual(sidecar['source_alignment_errors'][0]['word'], words[1])
+            self.assertEqual(sidecar['audio_duration_sec'], 1)
+            report = json.loads((result.parent / 'source_rejections.jsonl').read_text())
+            self.assertEqual(report['sample_id'], 'one')
+            exports.append(sidecar)
+        self.assertEqual(exports[0], exports[1]); self.assertEqual(exports[1], exports[2])
+        self.assertEqual((self.directory / 'words.json').read_bytes(), source)
+
+    def test_parity_preflight_exports_tail_error_without_changing_selected_id(self):
+        import yaml
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+        from check_interleaver_parity import prepare_parity_fixture
+        (self.directory / 'words.json').write_text(json.dumps([
+            {'word':'good','start':.1,'end':.4,'speaker':'agent'},
+            {'word':'mà','start':.8,'end':1.0169,'speaker':'user'}]))
+        config = self.base / 'parity.yaml'
+        config.write_text(yaml.safe_dump({'acceptance':{'model_root':str(self.base),
+            'prepared_manifest':str(self.manifest)},'lora':{'enable':True},'max_steps':2}))
+        assets = SimpleNamespace(moshi_weights=self.base / 'model', mimi_weights=self.base / 'mimi',
+                                 tokenizer=self.base / 'tokenizer')
+        with patch('tim_compat.local_checkpoint.LocalAssets.resolve', return_value=assets):
+            resolved = prepare_parity_fixture(config, self.base / 'parity', 0)
+        fixture = json.loads((resolved.parent / 'fixture.json').read_text())
+        self.assertEqual(fixture['samples'][0]['sample_id'], 'one')
+        selected = json.loads((resolved.parent / 'selected.jsonl').read_text())
+        self.assertEqual(Path(selected['path']).stem, 'one')
+        self.assertEqual(json.loads((resolved.parent / 'prepared/source_rejections.jsonl').read_text())['reason'],
+                         'timestamp_out_of_bounds')
+
     def test_disabled_returns_reference_manifest_untouched(self):
         original = self.base / "not-required-to-exist.jsonl"
         self.assertEqual(prepare_manifest(original, enabled=False), original)
@@ -196,7 +240,7 @@ class PreparedDataTest(unittest.TestCase):
 
     def test_invalid_inputs_leave_no_output(self):
         for mutate in (lambda words: words.reverse(),
-                       lambda words: words[0].update(end=2.0),
+                       lambda words: words[0].update(end=float('inf')),
                        lambda words: words[0].update(speaker="unknown")):
             words = json.loads(json.dumps(self.words))
             mutate(words)

@@ -83,6 +83,8 @@ def select_valid_chunk(dataset, observed, path, sample_id, sample_rate, policy, 
     """Scan only the selected conversation, retaining native order and errors."""
     from _common import write_json
     from tim_compat.sample_filter import chunk_rejection
+    from tim_compat.source_chunks import SourceChunkGate
+    gate = SourceChunkGate()
     selection = dict(sample_id=sample_id, chunks_examined=0, chunks_rejected=0,
                      candidate_index=None)
     with (output / 'rejections.jsonl').open('a') as report:
@@ -93,17 +95,21 @@ def select_valid_chunk(dataset, observed, path, sample_id, sample_rate, policy, 
                 start = chunk['start_time_sec']
                 if wav.ndim != 2 or wav.shape[0] != 2:
                     raise ValueError('LEFT=agent, RIGHT=user stereo required')
-                sample = observed(wav, start, str(path))
-                rejection = chunk_rejection(sample, policy)
+                sample = None
+                rejection = gate.rejection(path, start, start + wav.shape[-1] / sample_rate)
+                if rejection is None:
+                    sample = observed(wav, start, str(path))
+                    rejection = chunk_rejection(sample, policy)
                 if rejection is None:
                     selection['candidate_index'] = index
                     print(f'Accepted chunk {index}: start={start}s; '
                           f'rejected={selection["chunks_rejected"]}', flush=True)
                     return chunk, sample, selection
                 selection['chunks_rejected'] += 1
-                row = dict(sample_id=sample_id, candidate_index=index, chunk_start=start,
+                row = dict(rejection)
+                row.update(sample_id=sample_id, candidate_index=index, chunk_start=start,
                     chunk_end=start + wav.shape[-1] / sample_rate,
-                    provenance=getattr(sample, 'provenance', None), **rejection)
+                    provenance=getattr(sample, 'provenance', None))
                 report.write(json.dumps(row, ensure_ascii=False) + '\n')
                 report.flush()
                 print(f'Rejected chunk {index}: start={start}s; reason={row["reason"]}', flush=True)
