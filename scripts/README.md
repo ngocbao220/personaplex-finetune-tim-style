@@ -84,7 +84,7 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/run_all_gpu_checks.sh config.full.yaml
 
 Chạy base model và model đã merge adapter trong **hai process riêng**, gọi nguyên `moshi.offline` của PersonaPlex. Cả hai dùng cùng input, prompts, seed và sampling settings. Đây là inference smoke, không phải parity với LMGen của Moshi training. Chưa kiểm chứng trên GPU.
 
-Input lấy từ `acceptance.inference` trong config: WAV user **mono RIGHT channel**, agent voice prompt, file system prompt UTF-8 và `original_wav` stereo đã cắt đúng cùng cửa sổ. Không truyền stereo conversation vào `input_wav`.
+Input lấy từ `acceptance.inference`: `original_wav`/`input_file` hoặc `sample_id` trong prepared manifest. Dùng `user_channel: left/right`, `start_sec` và `window_seconds`; script tự tạo mono `user.wav` 24 kHz. CLI hỗ trợ `--sample-id`, `--start`/`--start-sec`, `--window-seconds`, `--input-file`/`--input-path`, `--user-channel`. Voice/text prompts lấy từ sample khi không override; file ngoài không có sample phải cung cấp đủ hai prompts. Xem mục 6 của README root cho ví dụ và quy tắc conditioning.
 
 Kết quả trong output directory:
 - `dialogue_original.wav`: cửa sổ conversation gốc.
@@ -93,7 +93,7 @@ Kết quả trong output directory:
 - `manifest.json`: sample/step, cửa sổ, seed, generation settings, transcript base/current, reference tùy chọn và tên audio files.
 - `base/`, `current/`: mono `agent.wav`, native `agent_text.json`, summary và merge artifacts; logs ở `base.log`, `current.log`.
 
-Cả ba dialogue WAV là stereo **LEFT=agent, RIGHT=user**, 24 kHz. Script fail nếu input user không khớp RIGHT của original hoặc độ dài các outputs khác nhau. Transcript ghép từ native text token pieces, không phải ASR. CER/WER hiện để `null` và ghi rõ chưa tính, không giả lập metrics.
+Dialogue WAV dùng 24 kHz; stereo giữ thứ tự kênh nguồn theo `user_channel`, ghi rõ trong manifest. Với nguồn mono, original giữ mono, base/current là LEFT=agent, RIGHT=user. Script fail nếu user không khớp kênh đã chọn hoặc độ dài các outputs khác nhau. Transcript ghép từ native text token pieces, không phải ASR. CER/WER hiện để `null` và ghi rõ chưa tính, không giả lập metrics.
 
 ### Free-running trong lúc train
 

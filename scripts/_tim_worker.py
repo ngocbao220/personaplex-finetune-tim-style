@@ -84,6 +84,12 @@ def main():
             info = loaders.CheckpointInfo.from_hf_repo(hf_repo=args.moshi_paths.hf_repo_id,
                 moshi_weights=args.moshi_paths.moshi_path, mimi_weights=args.moshi_paths.mimi_path,
                 tokenizer=args.moshi_paths.tokenizer_path, config_path=args.moshi_paths.config_path)
+            # Match native _train initialization order: codec construction consumes
+            # RNG before Moshi/LoRA initialization, including unsaved frozen LoRA.
+            mimi = info.get_mimi(device='cuda')
+            mimi.eval()
+            for param in mimi.parameters():
+                param.requires_grad = False
             model = get_fsdp_model(args, info, resume_lora_path=str(opts.reload / 'lora.safetensors'))
             batch = None
             if smoke_chunks:
@@ -96,7 +102,7 @@ def main():
                 write_json(artifacts / 'reload.json', evaluation(model, batch))
             torch.save({n: p.detach().cpu().clone() for n, p in model.named_parameters() if 'lora' in n},
                        artifacts / 'reload_tensors.pt')
-            del model, batch
+            del model, batch, mimi
             import gc
             gc.collect()
             torch.cuda.empty_cache()

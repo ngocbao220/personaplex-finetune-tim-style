@@ -7,13 +7,17 @@ acceptance:
   smoke_chunks: 8 # Mini-overfit smoke: train/eval/reload cùng tối đa 8 chunks hợp lệ cố định; 0=toàn tập, vẫn có cap eval 40 batches.
   inference:
     free_running_every_steps: 0 # 0=tắt trong train; N>0 chạy baseline trước train và mỗi N optimizer steps.
-    input_wav: /absolute/prepared/user_mono.wav # User audio mono (RIGHT channel), không truyền stereo.
     voice_prompt: /absolute/prepared/agent_voice.wav # Agent voice prompt WAV hoặc embeddings .pt native.
     text_prompt_file: /absolute/prepared/system_prompt.txt # System prompt UTF-8 cho free-running.
-    original_wav: /absolute/prepared/dialogue_window.wav # Stereo cùng cửa sổ với input_wav; LEFT=agent RIGHT=user.
-    sample_id: acceptance_sample # ID ghi trong manifest kết quả.
+    original_wav: /absolute/prepared/conversation.wav # Nguồn stereo; tự tách user.wav.
+    user_channel: right # left hoặc right; mono input_file dùng kênh duy nhất.
+    start_sec: 0.0 # Offset cắt từ file nguồn, tính bằng giây.
+    window_seconds: 10.0 # Cửa sổ inference; bỏ key để dùng đến cuối file.
+    # input_file: /absolute/external.wav # Thay nguồn bằng file mono/stereo ngoài manifest.
+    # Dùng sample_id bên dưới và bỏ original_wav/input_file để chọn từ prepared_manifest.
+    # Bỏ voice_prompt/text_prompt_file để tự lấy conditioning từ sample_id.
+    sample_id: acceptance_sample # ID chọn prepared sample khi không dùng nguồn file; nếu dùng file thì là nhãn.
     step: 100 # Nhãn checkpoint step; cập nhật theo checkpoint thực tế.
-    window_start_sec: 0.0 # Offset cửa sổ đã cắt trong conversation gốc.
     # reference_text_file: /absolute/prepared/agent_reference.txt # Transcript agent trong đúng cửa sổ (tùy chọn).
 
 data:

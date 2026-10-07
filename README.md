@@ -129,12 +129,21 @@ python "$PROJECT/prepare_data.py" \
 
 Đặt `data.train_data` của **native Tim YAML** thành manifest do lệnh in ra; cấu hình eval riêng theo mục đích. Thêm `--config /absolute/configs/train-native.yaml` có thể xuất derived `train.yaml`, nhưng **chỉ đổi train_data**, không tự bật prompts hay đổi eval/shuffle/loss.
 
+Hai template native training có sẵn (thay mọi đường dẫn `/absolute/...`):
+
+- `configs/train_original.yaml`: giữ recipe `configs/pharma_demo.yaml`: chunk 80s, batch 8, 6 microbatches, 1024 steps, LoRA rank 64, context injection và eval mỗi 64 steps. Dùng model local, tắt WandB và generation eval gọi API. Cần tài nguyên GPU phù hợp; eval manifest riêng phải nằm trong cap 40 batches của native evaluator.
+- `configs/train_single_gpu.yaml`: giữ loss, LoRA và optimizer của recipe gốc, giảm chunk xuống 10s, batch 1, giữ 6 microbatches; tắt context injection và eval. Đây là train trên toàn manifest, không có giới hạn smoke 8 chunks. Không đảm bảo vừa VRAM mọi GPU. Prompt phải còn đủ chỗ cho dialogue; tăng `duration_sec` nếu bị crop/overflow.
+
+Cả hai dùng loss gốc (`first_codebook_weight_multiplier: 4`, `text_padding_weight: 0.04`, `lora_l2_weight: 1e-4`), khác objective acceptance. Export train và held-out eval riêng để tránh trùng dữ liệu. `prompt_budget_frames: 0` giữ mặc định gốc; với context injection, đo budget bằng công cụ upstream trước khi đổi. Filter strict của parity/smoke không tự bật trong train thường.
+
 ```bash
 CUDA_VISIBLE_DEVICES=0 torchrun --standalone --nproc-per-node=1 \
   "$PROJECT/train_local.py" \
   --model-root /absolute/models/personaplex-7b-v1 \
-  --config /absolute/configs/train-native.yaml
+  --config "$PROJECT/configs/train_single_gpu.yaml"
 ```
+
+Dùng `train_original.yaml` khi cần recipe gốc và đủ tài nguyên. Resume bằng cách thêm `--resume-from /absolute/runs/<run>/checkpoints/<checkpoint>` vào lệnh; giữ config/horizon tương ứng với checkpoint.
 
 Native config không có section `acceptance`; bind exported Tim manifest, không đưa prepared manifest trực tiếp vào Tim loader. Giữ `system_prompt.enable: true` để dùng prepared voice/text prompts. Chạy acceptance trên 10 samples trước khi train quy mô lớn.
 
@@ -175,11 +184,13 @@ Free-running khác teacher-forced eval: model tự sinh agent audio/text từ us
 
 Trong `acceptance.inference`, chuẩn bị:
 
-- `input_wav`: **mono user RIGHT channel**, không phải stereo conversation.
-- `original_wav`: stereo original đã cắt đúng cùng cửa sổ.
-- `voice_prompt`: agent WAV hoặc native embeddings `.pt`.
-- `text_prompt_file`: system prompt UTF-8.
-- `sample_id`, `window_start_sec`; optional `reference_text_file`.
+- `original_wav` hoặc `input_file`: nguồn audio; không cần khai báo WAV user mono riêng. Stereo dùng `user_channel: left/right` (mặc định right); mono dùng kênh duy nhất.
+- `sample_id`: chọn conversation trong `acceptance.prepared_manifest` khi bỏ hai đường dẫn trên. Có thể dùng `acceptance.prepared_manifests: [train, validation, test]` để tìm ID trên nhiều prepared manifests (không phải manifest Tim đã export).
+- `start_sec` (alias YAML `start`), `window_seconds`: cắt cửa sổ trước khi đưa vào model. Prepared sample từ ID từ chối cửa sổ vượt cuối; file ngoài dùng đến cuối file nếu ngắn hơn, như code cũ.
+- `voice_prompt`, `text_prompt_file` hoặc inline `text_prompt`: override conditioning. Nếu thiếu, lấy từ sample_id (`metadata.json`, voice prompt tương ứng kênh agent). File ngoài không có sample_id phải cung cấp đủ voice/text prompt. Khi dùng ID để lấy prompts, bỏ các đường dẫn prompt mẫu trong config.
+- `reference_text_file`: transcript agent tùy chọn, phải khớp cửa sổ đã chọn.
+
+Cách chọn audio/conditioning đối chiếu từ code cũ `../personaplex-finetuning/src/tools/inference_smoke.py` và `src/personaplex_finetuning/inference.py`; generation vẫn dùng backend native PersonaPlex của repository này.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python "$PROJECT/scripts/run_free_running_inference.py" \
@@ -187,6 +198,20 @@ CUDA_VISIBLE_DEVICES=0 python "$PROJECT/scripts/run_free_running_inference.py" \
   --checkpoint /absolute/runs/gpu_acceptance/tim_run/checkpoints/checkpoint_000100/consolidated \
   --step 100 --output-dir /absolute/runs/free_running_100
 ```
+
+Thêm vào lệnh trên để chọn cửa sổ theo ID (CLI ID thay nguồn file trong config):
+
+```bash
+--sample-id conversation_001 --start 42.5 --window-seconds 10 --user-channel right
+```
+
+Hoặc thay audio bằng file ngoài, giữ conditioning từ ID nếu không có prompt overrides:
+
+```bash
+--sample-id conversation_001 --input-file /absolute/external.wav --start 5 --window-seconds 10
+```
+
+`user.wav` trong output được tự tạo ở 24 kHz và dùng chung cho base/current. Dialogue original giữ thứ tự kênh nguồn; generated dialogue thay kênh agent bằng audio sinh ra. Với nguồn mono, original là mono và generated dialogue là LEFT=agent/RIGHT=user. Manifest ghi channel mapping và cửa sổ thực tế; baseline reuse kiểm tra source hash, kênh, cửa sổ và prompts. Phần chọn audio này không tự chạy strict text-overflow filter của parity/smoke.
 
 Checkpoint cần `lora.safetensors` và `config.json` có LoRA rank/scaling. Wrapper merge bằng pipeline gốc, yêu cầu local inference config. `--step` chỉ gán provenance ở standalone, không đặt lịch. `--greedy` tắt sampling; mặc định native audio temperature/top-k = `0.8/250`, text = `0.7/25`.
 

@@ -80,6 +80,10 @@ class GPUAcceptanceScriptsTest(unittest.TestCase):
             dialogue_arrays(original, user, user[:, :2], user)
         with self.assertRaises(ValueError):
             dialogue_arrays(original, user, user * float('nan'), user)
+        left_original = original[::-1]
+        left_base, left_current = dialogue_arrays(left_original, user, user * 2, user * 3, 'left')
+        np.testing.assert_array_equal(left_base[0], user[0])
+        np.testing.assert_array_equal(left_current[1], user[0] * 3)
         self.assertEqual(text_from_pieces(['BOS', ' Xin', ' chào', 'PAD', 'EOS']), 'Xin chào')
 
 

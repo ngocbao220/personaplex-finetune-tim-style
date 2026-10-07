@@ -17,18 +17,23 @@ def require_file(path):
     return path
 
 
-def dialogue_arrays(original, user, base, current):
+def dialogue_arrays(original, user, base, current, user_channel="right"):
     """Assert a matched full-window comparison; never silently crop/pad exports."""
     import numpy as np
     original, user, base, current = map(np.asarray, (original, user, base, current))
-    if original.ndim != 2 or original.shape[0] != 2 or not original.shape[-1]:
-        raise ValueError('original dialogue must have LEFT=agent, RIGHT=user')
+    if original.ndim != 2 or original.shape[0] not in (1, 2) or not original.shape[-1]:
+        raise ValueError('original dialogue must be mono or stereo')
     if any(x.shape != (1, original.shape[-1]) for x in (user, base, current)):
         raise ValueError('original/user/base/current audio windows must have identical length')
     if not all(np.isfinite(x).all() for x in (original, user, base, current)):
         raise ValueError('nonfinite dialogue audio')
-    if not np.allclose(original[1], user[0], atol=1e-4, rtol=0):
-        raise ValueError('input user WAV differs from RIGHT channel of original window')
+    channel = 0 if original.shape[0] == 1 or user_channel == 'left' else 1
+    if user_channel not in ('left', 'right'):
+        raise ValueError('user_channel must be left or right')
+    if not np.allclose(original[channel], user[0], atol=1e-4, rtol=0):
+        raise ValueError('input user WAV differs from selected channel of original window')
+    if user_channel == 'left' and original.shape[0] == 2:
+        return np.concatenate((user, base)), np.concatenate((user, current))
     return np.concatenate((base, user)), np.concatenate((current, user))
 
 
@@ -41,10 +46,16 @@ def main():
     p.add_argument('--config', required=True, type=Path)
     p.add_argument('--checkpoint', required=True, type=Path, help='Tim consolidated adapter directory')
     p.add_argument('--output-dir', required=True, type=Path)
-    p.add_argument('--input-wav', type=Path, help='Mono user WAV; extract RIGHT channel externally')
+    p.add_argument('--input-wav', type=Path, help=argparse.SUPPRESS)
     p.add_argument('--voice-prompt', type=Path, help='Prepared agent WAV or native .pt voice embeddings')
     p.add_argument('--text-prompt-file', type=Path, help='UTF-8 system prompt')
-    p.add_argument('--original-wav', type=Path, help='Stereo original window, LEFT=agent RIGHT=user')
+    p.add_argument('--text-prompt', help='Inline system prompt (overrides configured text file)')
+    p.add_argument('--original-wav', type=Path, help='Source conversation WAV')
+    p.add_argument('--input-file', '--input-path', type=Path, help='External mono/stereo audio; overrides manifest selection')
+    p.add_argument('--sample-id', help='Prepared manifest sample ID (or external file label)')
+    p.add_argument('--user-channel', choices=('left', 'right'))
+    p.add_argument('--start', '--start-sec', dest='start_sec', type=float)
+    p.add_argument('--window-seconds', type=float)
     p.add_argument('--reference-text-file', type=Path, help='Optional agent transcript for this window')
     p.add_argument('--greedy', action='store_true')
     p.add_argument('--step', type=int, help='Actual optimizer step, overriding config label')
@@ -53,18 +64,37 @@ def main():
     opts = p.parse_args()
     offline()
     values, acceptance = read_config(opts.config)
-    infer = acceptance.get('inference', {})
+    infer = dict(acceptance.get('inference', {}))
+    for key in ('input_file', 'sample_id', 'user_channel', 'start_sec', 'window_seconds', 'original_wav', 'voice_prompt', 'text_prompt_file', 'text_prompt'):
+        value = getattr(opts, key)
+        if value is not None:
+            infer[key] = str(value) if isinstance(value, Path) else value
+    if opts.text_prompt is not None:
+        infer.pop('text_prompt_file', None)
+    elif opts.text_prompt_file is not None:
+        infer.pop('text_prompt', None)
+    if 'start' in infer and 'start_sec' not in infer:
+        infer['start_sec'] = infer['start']
+    if opts.sample_id is not None and opts.input_file is None and opts.original_wav is None:
+        infer.pop('original_wav', None)
+        infer.pop('input_file', None)
+    if opts.original_wav is not None and opts.input_file is None:
+        infer.pop('input_file', None)
+    user_channel = infer.get('user_channel', 'right')
     paths = {}
-    for key in ('input_wav', 'voice_prompt', 'text_prompt_file'):
-        value = getattr(opts, key) or infer.get(key)
-        if not value:
-            p.error(f'provide --{key.replace("_", "-")} or acceptance.inference.{key}')
-        paths[key] = require_file(value)
-    if opts.native_weight is None:
-        original = opts.original_wav or infer.get('original_wav')
-        if not original:
-            p.error('provide --original-wav or acceptance.inference.original_wav')
-        paths['original_wav'] = require_file(original)
+    if opts.native_weight is not None:
+        for key in ('input_wav', 'voice_prompt', 'text_prompt_file'):
+            value = getattr(opts, key) or infer.get(key)
+            if not value:
+                p.error(f'provide --{key.replace("_", "-")} or acceptance.inference.{key}')
+            paths[key] = require_file(value)
+    else:
+        from tim_compat.inference_input import select_source, conditioning
+        manifests = acceptance.get('prepared_manifests') or acceptance.get('prepared_manifest')
+        paths['original_wav'] = select_source(infer, manifests)
+        paths['voice_prompt'], prompt_text, prompt_file = conditioning(infer, manifests)
+        if prompt_file is not None:
+            paths['text_prompt_file'] = require_file(prompt_file)
         reference = opts.reference_text_file or infer.get('reference_text_file')
         if reference:
             paths['reference_text_file'] = require_file(reference)
@@ -99,7 +129,11 @@ def main():
             raise ValueError('STOP: empty adapter or keys unsupported by native merger')
         if not any(key.endswith('.lora_B.weight') for key in keys):
             raise ValueError('STOP: adapter contains no LoRA B tensors')
-    audio, _ = sphn.read(str(paths['input_wav']))
+    if opts.native_weight is None:
+        from tim_compat.inference_input import load_audio_window
+        original_audio, audio, window_start = load_audio_window(paths['original_wav'], infer)
+    else:
+        audio, _ = sphn.read(str(paths['input_wav']))
     if audio.ndim != 2 or audio.shape[0] != 1 or not audio.shape[-1]:
         raise ValueError('input WAV must be nonempty mono user audio, not stereo conversation')
     output = opts.output_dir.resolve()
@@ -109,9 +143,17 @@ def main():
     try:
         if opts.native_weight is None:
             signature = dict(inputs=report['inputs'], seed=values.get('seed', 0), greedy=opts.greedy,
-                             base_weights=str(assets.moshi_weights))
+                             base_weights=str(assets.moshi_weights), user_channel=user_channel,
+                             start_sec=window_start, window_seconds=infer.get('window_seconds'),
+                             text_prompt=prompt_text)
             import hashlib
             signature['input_hashes'] = {k: hashlib.sha256(v.read_bytes()).hexdigest() for k, v in paths.items()}
+            # Derived path is run-specific: baseline identity uses source hash and window.
+            if 'text_prompt_file' not in paths:
+                paths['text_prompt_file'] = output / 'prompt_text.txt'
+                paths['text_prompt_file'].write_text(prompt_text, encoding='utf-8')
+            paths['input_wav'] = output / 'user.wav'
+            sphn.write_wav(str(paths['input_wav']), audio, 24000)
             if opts.baseline_dir:
                 baseline = opts.baseline_dir.resolve()
                 prior = json.loads(require_file(baseline / 'manifest.json').read_text())
@@ -137,11 +179,14 @@ def main():
             loaded = {}
             for name, path in [('original', paths['original_wav']), ('user', paths['input_wav']),
                                ('base', output / 'base/agent.wav'), ('current', output / 'current/agent.wav')]:
+                if name == 'original':
+                    loaded[name] = original_audio
+                    continue
                 data, rate = sphn.read(str(path))
                 if rate != 24000:
                     data = sphn.resample(data, src_sample_rate=rate, dst_sample_rate=24000)
                 loaded[name] = data
-            base_dialogue, step_dialogue = dialogue_arrays(**loaded)
+            base_dialogue, step_dialogue = dialogue_arrays(**loaded, user_channel=user_channel)
             for filename, data in [('dialogue_original.wav', loaded['original']),
                                    ('dialogue_base.wav', base_dialogue), ('dialogue_step.wav', step_dialogue)]:
                 sphn.write_wav(str(output / filename), np.ascontiguousarray(data), 24000)
@@ -155,9 +200,12 @@ def main():
                 hypothesis=hypotheses['current'], transcript=hypotheses['current'],
                 base_hypothesis=hypotheses['base'], reference=reference, raw_reference=reference,
                 cer=None, wer=None, metrics_status='not computed; native token text is not ASR scoring',
-                window_start_sec=infer.get('window_start_sec', 0.0),
+                window_start_sec=window_start,
                 window_duration_sec=loaded['original'].shape[-1] / 24000,
-                sample_rate=24000, channels={'left': 'agent', 'right': 'user'},
+                sample_rate=24000, channels=({'left': 'user', 'right': 'agent'} if user_channel == 'left'
+                          else {'left': 'agent', 'right': 'user'}) if original_audio.shape[0] == 2
+                          else {'source_mono': 'user', 'generated_left': 'agent', 'generated_right': 'user'},
+                user_channel=user_channel,
                 seed=values.get('seed', 0), generation=dict(greedy=opts.greedy, temp_audio=.8,
                     temp_text=.7, topk_audio=250, topk_text=25),
                 inputs=report['inputs'], base_weights=str(assets.moshi_weights),

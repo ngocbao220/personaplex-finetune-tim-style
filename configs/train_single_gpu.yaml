@@ -1,0 +1,58 @@
+# Native Tim training config; replace /absolute paths before launch.
+# Original loss/LoRA/optimizer recipe with smaller chunks and batches.
+# Full train manifest is used: no acceptance smoke subset or 8-chunk cap.
+# Eval disabled to avoid native 40-batch cap; gen_eval/API and WandB disabled.
+# 10s must fit your prompts; increase duration if prompt/dialogue is truncated.
+data:
+  train_data: /absolute/exports/tim-train/train.jsonl
+  eval_data: ''
+  shuffle: true
+moshi_paths:
+  hf_repo_id: nvidia/personaplex-7b-v1
+  moshi_path: /absolute/models/personaplex-7b-v1/model.safetensors
+  mimi_path: /absolute/models/personaplex-7b-v1/tokenizer-e351c8d8-checkpoint125.safetensors
+  tokenizer_path: /absolute/models/personaplex-7b-v1/tokenizer_spm_32k_3.model
+  config_path: /absolute/models/personaplex-7b-v1/config.json
+system_prompt:
+  enable: true
+  audio_silence_frames: 6
+  prompt_budget_frames: 0
+puppeteer:
+  enable: false
+  max_tokens_per_injection: 50
+  context_tag: context
+full_finetuning: false
+lora:
+  enable: true
+  rank: 64
+  scaling: 2.0
+  ft_embed: false
+  skip_depformer: true
+first_codebook_weight_multiplier: 4.0
+text_padding_weight: 0.04
+audio_loss_weight: 1.0
+lora_l2_weight: 0.0001
+duration_sec: 10.0
+batch_size: 1
+max_steps: 1024
+gradient_checkpointing: true
+num_microbatches: 6
+optim:
+  lr: 2.0e-05
+  weight_decay: 0.1
+  pct_start: 0.05
+seed: 0
+log_freq: 1
+eval_freq: 0
+do_eval: false
+do_ckpt: true
+ckpt_freq: 64
+num_ckpt_keep: null
+skip_zero_eval: true
+save_adapters: true
+run_dir: runs/train-single-gpu
+overwrite_run_dir: false
+wandb:
+  project: null
+gen_eval:
+  enable: false

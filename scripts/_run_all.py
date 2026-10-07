@@ -20,7 +20,7 @@ def main():
               ('run_gpu_acceptance.py', opts.runs_dir / 'gpu_acceptance', list(checks)[6:8])]
     failed = False
     mini_overfit_coverage = 'not_run'
-    native_smoke = 'SKIPPED: configure acceptance.inference input_wav, voice_prompt, text_prompt_file'
+    native_smoke = 'SKIPPED: configure acceptance.inference source audio, voice_prompt, text_prompt_file'
     try:
         for script, output, names in phases:
             result = subprocess.run([sys.executable, str(ROOT / 'scripts' / script),
